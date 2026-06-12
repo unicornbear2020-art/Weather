@@ -316,6 +316,22 @@
     .compass-e{top:50%;left:94%}
     .compass-s{top:92%;left:50%}
     .compass-w{top:50%;left:6%}
+    .phone-heading-indicator{
+      position:absolute;
+      z-index:3;
+      left:50%;
+      top:50%;
+      width:22px;
+      height:28px;
+      display:none;
+      pointer-events:none;
+      background:#111111;
+      opacity:.88;
+      clip-path:polygon(50% 0%,0% 100%,50% 72%,100% 100%);
+      transform:translate(-50%,-50%);
+      transform-origin:50% 58%;
+      filter:drop-shadow(0 1px 2px rgba(255,255,255,.8));
+    }
     .sun-shadow-status{
       min-height:0;
       margin-top:4px;
@@ -567,6 +583,7 @@
             <span class="compass-label compass-e">E</span>
             <span class="compass-label compass-s">S</span>
             <span class="compass-label compass-w">W</span>
+            <span id="sunShadowPhonePointer" class="phone-heading-indicator" aria-hidden="true"></span>
           </div>
           <div id="sunShadowStatus" class="sun-shadow-status"></div>
           <div class="sun-shadow-controls">
@@ -1707,6 +1724,7 @@ function calculateSunShadow(date, lat, lon){
 
 function initPhoneCompass(){
   updateCompassOverlay();
+  updatePhoneHeadingIndicator();
   if(!window.DeviceOrientationEvent){
     $('#sunShadowCompassStatus').textContent = 'Phone compass not supported on this browser';
   }
@@ -1762,6 +1780,7 @@ function handleDeviceOrientation(event){
   if(sunShadowOrientationMode === 'phone'){
     $('#sunShadowCompassStatus').textContent = 'Phone compass active';
     updateCompassOverlay();
+    updatePhoneHeadingIndicator();
     renderCurrentSunShadow();
   }
 }
@@ -1780,12 +1799,14 @@ function setSunShadowOrientationMode(mode){
     sunShadowOrientationMode = 'phone';
     updateSunShadowOrientationButtons();
     updateCompassOverlay();
+    updatePhoneHeadingIndicator();
     renderCurrentSunShadow();
     return;
   }
   sunShadowOrientationMode = mode === 'phone' ? 'phone' : 'north';
   updateSunShadowOrientationButtons();
   updateCompassOverlay();
+  updatePhoneHeadingIndicator();
   renderCurrentSunShadow();
 }
 
@@ -1800,10 +1821,17 @@ function updateSunShadowOrientationButtons(){
 }
 
 function worldAzimuthToDisplayAzimuth(worldAzimuth){
-  const heading = sunShadowOrientationMode === 'phone' && Number.isFinite(phoneHeading)
-    ? phoneHeading
-    : 0;
-  return (Number(worldAzimuth) - heading + 360) % 360;
+  return (Number(worldAzimuth) + 360) % 360;
+}
+
+function updatePhoneHeadingIndicator(){
+  const pointer = $('#sunShadowPhonePointer');
+  if(!pointer) return;
+  const visible = sunShadowOrientationMode === 'phone' && Number.isFinite(phoneHeading);
+  pointer.style.display = visible ? 'block' : 'none';
+  if(visible){
+    pointer.style.transform = `translate(-50%,-50%) rotate(${phoneHeading}deg)`;
+  }
 }
 
 function updateCompassOverlay(){
@@ -1979,46 +2007,42 @@ function renderSunShadowScene(result){
   const gridLines = [];
   const gridColors = [];
   const extent = 120;
+  const groundY = -0.10;
+  const gridY = -0.055;
+  const shadowY = -0.004;
 
   addQuad(
     groundTriangles, groundColors,
-    [-extent,-0.03,-extent], [extent,-0.03,-extent],
-    [extent,-0.03,extent], [-extent,-0.03,extent],
+    [-extent,groundY,-extent], [extent,groundY,-extent],
+    [extent,groundY,extent], [-extent,groundY,extent],
     [0.96,0.96,0.96,1]
   );
 
   const gridStep = 30;
   for(let value=-extent; value<=extent; value+=gridStep){
-    addLine(gridLines,gridColors,[-extent,0,value],[extent,0,value],[0.84,0.84,0.84,1]);
-    addLine(gridLines,gridColors,[value,0,-extent],[value,0,extent],[0.84,0.84,0.84,1]);
+    addLine(gridLines,gridColors,[-extent,gridY,value],[extent,gridY,value],[0.84,0.84,0.84,1]);
+    addLine(gridLines,gridColors,[value,gridY,-extent],[value,gridY,extent],[0.84,0.84,0.84,1]);
   }
-  addLine(gridLines,gridColors,[0,0,0],[0,0,extent],[0.48,0.48,0.48,1]);
-  addLine(gridLines,gridColors,[0,0,0],[extent,0,0],[0.62,0.62,0.62,1]);
+  addLine(gridLines,gridColors,[0,gridY,0],[0,gridY,extent],[0.74,0.74,0.74,1]);
+  addLine(gridLines,gridColors,[0,gridY,0],[extent,gridY,0],[0.74,0.74,0.74,1]);
 
   const buildingShadowLengthFactor = result.hasDirectShadow
     ? 1 / Math.tan(Math.max(result.sunAltitude * Math.PI / 180,0.001))
     : 0;
   const displayShadowAzimuth = worldAzimuthToDisplayAzimuth(result.shadowAzimuth);
-  const sceneRotation = sunShadowOrientationMode === 'phone' && Number.isFinite(phoneHeading)
-    ? -phoneHeading
-    : 0;
+  const sceneRotation = 0;
   for(const building of result.buildings || []){
-    const rotated = rotateGroundPoint(
-      building.x,
-      building.z,
-      sceneRotation
-    );
-    const displayBuilding = {...building,x:rotated.x,z:rotated.z,rotation:sceneRotation};
+    const displayBuilding = {...building,rotation:sceneRotation};
     if(result.hasDirectShadow){
       const buildingShadowLength = Math.min(building.height * buildingShadowLengthFactor,80);
       const polygon = addBuildingShadow(displayBuilding,displayShadowAzimuth,buildingShadowLength);
-      addFlatPolygon(shadowTriangles,shadowColors,polygon,0.04,[0.05,0.05,0.05,0.34]);
+      addFlatPolygon(shadowTriangles,shadowColors,polygon,shadowY,[0.58,0.58,0.58,1]);
     }
     addBox(
       buildingTriangles, buildingColors,
       displayBuilding.x, building.height / 2, displayBuilding.z,
       building.width, building.height, building.depth,
-      [0.72,0.72,0.72,0.64],
+      [0.93,0.93,0.93,1],
       sceneRotation
     );
   }
@@ -2041,15 +2065,12 @@ function renderSunShadowScene(result){
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   gl.enable(gl.DEPTH_TEST);
   gl.disable(gl.CULL_FACE);
-  gl.enable(gl.BLEND);
-  gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+  gl.disable(gl.BLEND);
   gl.useProgram(sunShadowProgram);
   gl.uniformMatrix4fv(gl.getUniformLocation(sunShadowProgram,'uMatrix'),false,new Float32Array(matrix));
   drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,groundTriangles,groundColors);
   drawWebGlGeometry(gl,sunShadowProgram,gl.LINES,gridLines,gridColors);
-  gl.depthMask(false);
   drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,shadowTriangles,shadowColors);
-  gl.depthMask(true);
   drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,buildingTriangles,buildingColors);
 }
 
@@ -2177,6 +2198,16 @@ function normalizeColor(color){
   return color.length === 4 ? color : [color[0],color[1],color[2],1];
 }
 
+function shadeColor(color, shade){
+  const rgba = normalizeColor(color);
+  return [
+    clamp(rgba[0] * shade, 0, 1),
+    clamp(rgba[1] * shade, 0, 1),
+    clamp(rgba[2] * shade, 0, 1),
+    rgba[3]
+  ];
+}
+
 function addBox(positions, colors, x,y,z,width,height,depth,color,rotation=0){
   const y0=y-height/2, y1=y+height/2;
   const angle=rotation*Math.PI/180, cos=Math.cos(angle), sin=Math.sin(angle);
@@ -2193,11 +2224,20 @@ function addBox(positions, colors, x,y,z,width,height,depth,color,rotation=0){
   const b1=point(width/2,-depth/2,y1);
   const c1=point(width/2,depth/2,y1);
   const d1=point(-width/2,depth/2,y1);
-  addQuad(positions,colors,d0,c0,c1,d1,color);
-  addQuad(positions,colors,b0,a0,a1,b1,color);
-  addQuad(positions,colors,a0,d0,d1,a1,color);
-  addQuad(positions,colors,c0,b0,b1,c1,color);
-  addQuad(positions,colors,d1,c1,b1,a1,color);
+
+  // Light grey building material with simple face shading.
+  // This keeps the buildings solid and clear, while still showing basic volume.
+  const sideA = shadeColor(color, 0.96);
+  const sideB = shadeColor(color, 0.90);
+  const sideC = shadeColor(color, 0.98);
+  const sideD = shadeColor(color, 0.84);
+  const roof = shadeColor(color, 1.02);
+
+  addQuad(positions,colors,d0,c0,c1,d1,sideA);
+  addQuad(positions,colors,b0,a0,a1,b1,sideB);
+  addQuad(positions,colors,a0,d0,d1,a1,sideC);
+  addQuad(positions,colors,c0,b0,b1,c1,sideD);
+  addQuad(positions,colors,d1,c1,b1,a1,roof);
 }
 
 function mat4Perspective(fov, aspect, near, far){
