@@ -1,0 +1,2651 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Weather Radar & Forecast</title>
+  <link rel="preconnect" href="https://api.open-meteo.com">
+  <link rel="preconnect" href="https://geocoding-api.open-meteo.com">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@300;400&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="https://unpkg.com/suncalc@1.9.0/suncalc.js"></script>
+  <style>
+    :root {
+      --bg:#f7f7f7;
+      --panel:#ffffff;
+      --muted:#777777;
+      --text:#111111;
+      --accent:#333333;
+      --card-gap:16px;
+      --radius:14px;
+      --border:#dddddd;
+    }
+    *{box-sizing:border-box}
+    html,body{
+      margin:0;
+      background:var(--bg);
+      color:var(--text);
+      font:14px/1.5 'Noto Sans', system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+      font-weight:300;
+    }
+    header{
+      padding:18px 16px;
+      border-bottom:1px solid var(--border);
+      position:sticky;
+      top:0;
+      background:#ffffffcc;
+      backdrop-filter:blur(6px);
+      z-index:20;
+      max-width:1100px;
+      margin:0 auto;
+      width:100%;
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+      align-items:center;
+    }
+    h1{
+      margin:0;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      gap:8px;
+      font-weight:300;
+      width:100%;
+      text-align:center;
+    }
+    .sun-icon{
+      width:42px;
+      height:42px;
+      display:block;
+    }
+    .row{
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+      align-items:center;
+    }
+    header .row{
+      justify-content:center;
+      width:100%;
+    }
+    input,button{
+      background:#ffffff;
+      color:var(--text);
+      border:1px solid var(--border);
+      border-radius:10px;
+      padding:10px 12px;
+      font-family:'Noto Sans',system-ui,sans-serif;
+      font-weight:300;
+    }
+    input:focus,button:focus{
+      outline:1px solid var(--accent);
+      box-shadow:0 0 0 3px rgba(0,0,0,.06);
+    }
+    button{cursor:pointer}
+
+    /* 人仔 icon，縮細 */
+    .icon-btn{
+      padding:8px 10px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+    }
+    .icon-person{
+      position:relative;
+      width:12px;
+      height:14px;
+      display:inline-block;
+    }
+    .icon-person::before{
+      content:'';
+      position:absolute;
+      top:0;
+      left:50%;
+      width:5px;
+      height:5px;
+      border-radius:50%;
+      background:#000000;
+      transform:translateX(-50%);
+    }
+    .icon-person::after{
+      content:'';
+      position:absolute;
+      bottom:0;
+      left:50%;
+      width:8px;
+      height:8px;
+      border-radius:6px 6px 3px 3px;
+      background:#000000;
+      transform:translateX(-50%);
+    }
+
+    main{
+      padding:18px 16px 24px;
+      max-width:1100px;
+      margin:0 auto;
+    }
+    .grid{
+      display:grid;
+      grid-template-columns:repeat(12,1fr);
+      gap:var(--card-gap);
+    }
+    .card{
+      grid-column:span 12;
+      background:var(--panel);
+      border:1px solid var(--border);
+      border-radius:var(--radius);
+      padding:16px;
+      box-shadow:0 2px 5px rgba(0,0,0,0.03);
+    }
+    .card h2{
+      margin:0 0 10px 0;
+      font-size:16px;
+      letter-spacing:.2px;
+      font-weight:300;
+      text-align:center;
+    }
+    #nowTitle{
+      font-size:30px;
+      margin-bottom:14px;
+    }
+    #nowTitle .hiLo{
+      font-size:0.5em;
+      vertical-align:baseline;
+      color:#555;
+    }
+    .muted{color:var(--muted)}
+    .kpi{
+      display:flex;
+      gap:16px;
+      flex-wrap:wrap;
+      justify-content:center;
+    }
+    .kpi .item{
+      min-width:150px;
+      text-align:center;
+    }
+    .item .v{font-size:22px}
+    .footnote{
+      font-size:12px;
+      color:#999999;
+    }
+    #radarMap{
+      height:380px;
+      border-radius:14px;
+      border:1px solid var(--border);
+      filter:grayscale(1) contrast(1.1) brightness(0.98);
+      cursor:crosshair;
+    }
+    .radar-wrap{
+      position:relative;
+    }
+    .radar-message{
+      position:absolute;
+      inset:0;
+      z-index:500;
+      display:none;
+      align-items:center;
+      justify-content:center;
+      padding:24px;
+      border-radius:14px;
+      background:rgba(255,255,255,.92);
+      text-align:center;
+      pointer-events:none;
+    }
+    .radar-message.is-visible{display:flex}
+    .radar-message strong{
+      display:block;
+      margin-bottom:4px;
+      font-weight:400;
+    }
+    .radar-message span{
+      display:block;
+      max-width:420px;
+      color:var(--muted);
+    }
+    .rv-controls{
+      display:flex;
+      gap:8px;
+      align-items:center;
+      margin-top:8px;
+      flex-wrap:wrap;
+    }
+    .rv-time{min-width:190px}
+
+    /* Sun and shadow simulator */
+    .sun-shadow-layout{
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      gap:10px;
+    }
+    .sun-shadow-controls{
+      width:100%;
+      max-width:900px;
+      display:grid;
+      gap:10px;
+    }
+    .sun-shadow-field{
+      display:grid;
+      gap:5px;
+    }
+    .sun-shadow-field label,
+    .sun-shadow-mode-label{
+      font-size:12px;
+      color:var(--muted);
+    }
+    .sun-shadow-field input[type="date"]{
+      width:100%;
+    }
+    .sun-shadow-field input[type="range"]{
+      width:100%;
+      padding:6px 0;
+      accent-color:#222222;
+    }
+    .sun-shadow-time-row{
+      display:flex;
+      justify-content:space-between;
+      gap:12px;
+      font-size:12px;
+      color:var(--muted);
+    }
+    #sunShadowTimeLabel{
+      color:var(--text);
+      font-size:14px;
+    }
+    .sun-shadow-modes{
+      display:flex;
+      gap:6px;
+    }
+    .sun-shadow-mode{
+      flex:1;
+      padding:8px 10px;
+    }
+    .sun-shadow-mode.is-active{
+      color:#ffffff;
+      background:#111111;
+      border-color:#111111;
+    }
+    .sun-shadow-summary{
+      display:grid;
+      grid-template-columns:1fr auto;
+      gap:5px 12px;
+      padding-top:10px;
+      border-top:1px solid var(--border);
+      font-size:13px;
+    }
+    .sun-shadow-summary dt{color:var(--muted)}
+    .sun-shadow-summary dd{
+      margin:0;
+      text-align:right;
+    }
+    .sun-shadow-horizon{
+      color:var(--muted);
+      font-size:12px;
+    }
+    .sun-shadow-scene{
+      position:relative;
+      width:100%;
+      max-width:900px;
+      min-height:460px;
+      overflow:hidden;
+      border:1px solid var(--border);
+      border-radius:12px;
+      background:#fafafa;
+    }
+    #sunShadowCanvas{
+      display:block;
+      width:100%;
+      height:460px;
+      touch-action:none;
+      cursor:grab;
+    }
+    #sunShadowCanvas:active{cursor:grabbing}
+    .compass-label{
+      position:absolute;
+      z-index:2;
+      font-size:11px;
+      color:#555555;
+      pointer-events:none;
+      transform:translate(-50%,-50%);
+      transition:left .12s linear,top .12s linear;
+    }
+    .compass-n{top:8%;left:50%}
+    .compass-e{top:50%;left:94%}
+    .compass-s{top:92%;left:50%}
+    .compass-w{top:50%;left:6%}
+    .sun-shadow-status{
+      min-height:0;
+      margin-top:4px;
+      font-size:12px;
+      color:var(--muted);
+    }
+
+    /* 10-day icons */
+    .icons-row{
+      display:grid;
+      grid-template-columns:repeat(5,minmax(0,1fr));
+      gap:12px;
+      padding-bottom:4px;
+    }
+    .icons-day{
+      text-align:center;
+      cursor:pointer;
+      border:1px solid var(--border);
+      border-radius:12px;
+      padding:10px 8px;
+      background:#fff;
+      transition:transform 0.1s ease, box-shadow 0.1s ease;
+    }
+    .icons-day:hover{
+      transform:translateY(-2px);
+      box-shadow:0 2px 6px rgba(0,0,0,0.06);
+    }
+    .icons-day:focus-visible{
+      outline:2px solid var(--text);
+      outline-offset:2px;
+    }
+    .icons-icon{
+      width:54px;
+      height:54px;
+      display:block;
+      margin:0 auto 5px;
+      object-fit:contain;
+    }
+    .icons-date{
+      font-size:13px;
+      color:var(--text);
+    }
+    .icons-temp{
+      margin-top:3px;
+      font-size:13px;
+    }
+    .icons-rain{
+      margin-top:2px;
+      font-size:11px;
+      color:var(--muted);
+    }
+
+    table{
+      width:100%;
+      border-collapse:collapse;
+      font-weight:300;
+    }
+    #dailyTable{overflow-x:auto}
+    th,td{
+      padding:8px;
+      border-bottom:1px solid var(--border);
+      text-align:right;
+      white-space:nowrap;
+    }
+    th:first-child,td:first-child{text-align:left}
+
+    #sunBox{
+      margin-top:10px;
+      padding-top:10px;
+      border-top:1px solid var(--border);
+    }
+
+    .clickable-moon{
+      cursor:pointer;
+    }
+    .clickable-moon .k::after{
+      content:' ▾';
+      font-size:11px;
+      color:#999999;
+    }
+
+    /* Wind layout */
+    .wind-grid{
+      display:flex;
+      flex-direction:column;
+      gap:2px;
+      font-size:13px;
+    }
+    .wind-row{
+      display:grid;
+      grid-template-columns:110px 1fr 80px;
+      align-items:center;
+      padding:4px 0;
+      border-bottom:1px solid var(--border);
+    }
+    .wind-row:last-child{
+      border-bottom:none;
+    }
+    .wind-header{
+      font-weight:300;
+      color:var(--muted);
+    }
+    .wind-time{
+      text-align:left;
+    }
+    .wind-dir{
+      text-align:center;
+    }
+    .wind-speed{
+      text-align:right;
+    }
+
+    /* 第一張卡 24h（Time / Temp / Rain%） */
+    .next12-scroll{
+      overflow-x:auto;
+      margin:0 auto;
+      max-width:100%;
+    }
+    .next12-strip{
+      display:flex;
+      gap:4px;
+      padding-bottom:2px;
+    }
+    .hour-block{
+      min-width:64px;
+      text-align:center;
+    }
+    .hour-temp{
+      font-size:18px;
+    }
+    .hour-rain{
+      font-size:18px;
+    }
+    .hour-time{
+      font-size:11px;
+    }
+
+    @media(min-width:900px){
+      .card.span4{grid-column:span 4}
+      .card.span6{grid-column:span 6}
+      .card.span8{grid-column:span 8}
+    }
+    @media(max-width:600px){
+      header,main{
+        padding-left:10px;
+        padding-right:10px;
+      }
+      #radarMap{height:280px;}
+      .row{gap:6px;}
+      .icons-row{
+        display:flex;
+        flex-wrap:nowrap;
+        overflow-x:auto;
+        scroll-snap-type:x proximity;
+      }
+      .icons-day{
+        flex:0 0 112px;
+        scroll-snap-align:start;
+      }
+      .icons-icon{
+        width:48px;
+        height:48px;
+      }
+      .wind-row{
+        grid-template-columns:100px 1fr 70px;
+      }
+      .hour-block{
+        min-width:56px;
+      }
+      .sun-shadow-scene{min-height:min(420px,70vh)}
+      #sunShadowCanvas{height:min(420px,70vh)}
+      .sun-shadow-summary{font-size:12px}
+      .sun-shadow-controls{font-size:13px}
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1><img class="sun-icon" src="icons/clear.svg" alt="Weather"></h1>
+    <div class="row">
+      <input id="q" placeholder="Search location (e.g. Sydney)" size="32" />
+      <button id="searchBtn">Search</button>
+      <button id="locBtn" title="Use current location" class="icon-btn">
+        <span class="icon-person" aria-hidden="true"></span>
+      </button>
+      <!-- BOM obs toggle 隱藏，但預設啟用 -->
+      <label class="row" style="gap:8px; display:none;">
+        <input type="checkbox" id="useObs" checked />
+        <span class="muted">Use BOM obs correction</span>
+      </label>
+      <span id="status" class="muted"></span>
+    </div>
+  </header>
+
+  <main>
+    <div class="grid">
+
+      <!-- 卡 1：Now + 24h（Time / Temp / Rain%） -->
+      <section class="card span12">
+        <h2 id="nowTitle">--°C · --%</h2>
+        <div class="next12-scroll">
+          <div id="next12Strip" class="next12-strip"></div>
+        </div>
+      </section>
+
+      <!-- 卡 2：Current + Sun & Moon + AQ -->
+      <section class="card span6" id="currentCard">
+        <h2></h2>
+        <div class="kpi" id="currentKpi"></div>
+        <div id="sunBox" class="kpi"></div>
+      </section>
+
+      <!-- 卡 3：10-day icons（點擊展開當日 Rain 24h） -->
+      <section class="card span6">
+        <h2>10-day icons</h2>
+        <div id="dailyIcons" class="icons-row"></div>
+      </section>
+
+      <!-- 當日 24h Rain（由 icon 點擊開合） -->
+      <section class="card span12" id="rain24Card" style="display:none">
+        <h2 id="dayRainTitle">Rain</h2>
+        <canvas id="dayRainChart" height="160"></canvas>
+      </section>
+
+      <!-- Radar -->
+      <section class="card span12">
+        <h2>Radar (0–2 h nowcast)</h2>
+        <div class="radar-wrap">
+          <div id="radarMap"></div>
+          <div id="radarMessage" class="radar-message" role="status" aria-live="polite"></div>
+        </div>
+        <div class="rv-controls">
+          <button id="rvPrev">◀︎</button>
+          <button id="rvPlay">Play</button>
+          <button id="rvNext">▶︎</button>
+          <span id="rvLabel" class="rv-time muted"></span>
+          <span class="muted" style="margin-left:auto">
+            Click map to update all weather data
+          </span>
+        </div>
+      </section>
+
+      <section class="card span12" id="sunShadowCard">
+        <h2>Sun &amp; Shadow Simulator</h2>
+        <div class="sun-shadow-layout">
+          <div class="sun-shadow-scene">
+            <canvas id="sunShadowCanvas" aria-label="3D sun and shadow simulation"></canvas>
+            <span class="compass-label compass-n">N</span>
+            <span class="compass-label compass-e">E</span>
+            <span class="compass-label compass-s">S</span>
+            <span class="compass-label compass-w">W</span>
+          </div>
+          <div id="sunShadowStatus" class="sun-shadow-status"></div>
+          <div class="sun-shadow-controls">
+            <div>
+              <div class="sun-shadow-mode-label">Orientation</div>
+              <div class="sun-shadow-modes" role="group" aria-label="Sun shadow orientation mode">
+                <button type="button" class="sun-shadow-mode is-active" id="sunShadowNorthUp" aria-pressed="true">North-up</button>
+                <button type="button" class="sun-shadow-mode" id="sunShadowPhoneMode" aria-pressed="false">Phone direction</button>
+              </div>
+              <div id="sunShadowCompassStatus" class="sun-shadow-status" role="status" aria-live="polite"></div>
+            </div>
+            <div class="sun-shadow-field">
+              <label for="sunShadowTime">Time</label>
+              <input id="sunShadowTime" type="range" min="360" max="1080" step="5" value="720">
+              <div class="sun-shadow-time-row">
+                <span id="sunShadowSunrise">Sunrise —</span>
+                <strong id="sunShadowTimeLabel">12:00 pm</strong>
+                <span id="sunShadowSunset">Sunset —</span>
+              </div>
+            </div>
+            <div class="sun-shadow-field">
+              <label for="sunShadowDate">Date</label>
+              <input id="sunShadowDate" type="date">
+            </div>
+            <dl class="sun-shadow-summary">
+              <dt>Selected location</dt><dd id="sunShadowLocation">—</dd>
+              <dt>Time</dt><dd id="sunShadowSummaryTime">—</dd>
+              <dt>Sun direction</dt><dd id="sunShadowSunDirection">—</dd>
+              <dt>Sun altitude</dt><dd id="sunShadowAltitude">—</dd>
+              <dt>Shadow direction</dt><dd id="sunShadowDirection">—</dd>
+              <dt>Shadow length (1 m)</dt><dd id="sunShadowLength">—</dd>
+              <dt>Phone heading</dt><dd id="sunShadowPhoneHeading">—</dd>
+            </dl>
+            <div id="sunShadowHorizon" class="sun-shadow-horizon" role="status" aria-live="polite"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Humidity -->
+      <section class="card span12">
+        <h2>Humidity</h2>
+        <canvas id="humChart" height="200"></canvas>
+      </section>
+
+      <!-- UV -->
+      <section class="card span12">
+        <h2>UV</h2>
+        <canvas id="uvChart" height="200"></canvas>
+      </section>
+
+      <!-- Wind -->
+      <section class="card span12">
+        <h2>Wind</h2>
+        <div id="windTable"></div>
+      </section>
+
+      <!-- 7 Days（日期＋星期，不顯示年份） -->
+      <section class="card span12">
+        <h2>7 Days</h2>
+        <div id="dailyTable"></div>
+      </section>
+
+      <section class="card span12">
+        <div class="footnote">
+          Data sources: Open-Meteo (multi-model blend), BOM ACCESS-G, BOM surface obs (optional),
+          Open-Meteo Air Quality, RainViewer radar, SunCalc, OpenStreetMap buildings, and SRTM elevation.
+        </div>
+      </section>
+    </div>
+  </main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script type="module">
+const $ = (s)=>document.querySelector(s);
+const statusEl = $('#status');
+const qEl = $('#q');
+const useObsEl = $('#useObs');
+
+const DEFAULT_LOC = {
+  name: 'Sydney, AU',
+  lat: -33.8688,
+  lon: 151.2093,
+  tz: 'Australia/Sydney'
+};
+
+const BOM_STATIONS = [{
+  name: 'Sydney Observatory Hill',
+  lat: -33.8607,
+  lon: 151.2050,
+  maxDistanceKm: 35,
+  obsUrl: 'https://www.bom.gov.au/fwo/IDN60901/IDN60901.94768.json'
+}];
+const OM_FORECAST  = 'https://api.open-meteo.com/v1/forecast';
+const OM_BOM       = 'https://api.open-meteo.com/v1/bom';
+const OM_GEOCODE   = 'https://geocoding-api.open-meteo.com/v1/search';
+const OM_AIR       = 'https://air-quality-api.open-meteo.com/v1/air-quality';
+const BOM_PROXY_PREFIX = '';
+
+Chart.defaults.color       = '#444444';
+Chart.defaults.borderColor = '#cccccc';
+
+let humChart, uvChart, dayRainChart;
+let rvMap, baseLayer, labelLayer, rvFrames = [], rvIndex = 0, rvTimer = null, overlay = null;
+let rvHost = 'https://tilecache.rainviewer.com';
+let lastCenter = { lat: DEFAULT_LOC.lat, lon: DEFAULT_LOC.lon };
+let locMarker = null;
+let lastFusion = null;
+let selectedRainDay = null;
+let radarTileErrors = 0;
+let loadSequence = 0;
+let selectedLocation = {...DEFAULT_LOC};
+let sunShadowMode = 'map';
+let sunShadowBuildings = [];
+let sunShadowElevation = null;
+let sunShadowLocationKey = '';
+let sunShadowFetchSequence = 0;
+let sunShadowGl = null;
+let sunShadowProgram = null;
+let sunShadowOrientationMode = 'north';
+let phoneHeading = null;
+let phoneCompassListening = false;
+let phoneCompassEventName = null;
+let phoneCompassTimer = null;
+let sunShadowCamera = {
+  yaw:-35,
+  pitch:48,
+  distanceMap:230
+};
+let sunShadowPointers = new Map();
+let sunShadowPinchStart = null;
+let sunShadowRenderFrame = null;
+
+/* UV 粉橙色背景帶 */
+const UV_BANDS = [
+  {max:2,   label:'Low',      color:'rgba(255, 204, 153, 0.06)'},
+  {max:5,   label:'Moderate', color:'rgba(255, 204, 153, 0.10)'},
+  {max:7,   label:'High',     color:'rgba(255, 204, 153, 0.14)'},
+  {max:10,  label:'Very high',color:'rgba(255, 204, 153, 0.18)'},
+  {max:50,  color:'rgba(255, 204, 153, 0.22)'}
+];
+const uvBackgroundPlugin = {
+  id: 'uvBg', beforeDraw(chart){
+    if(chart.canvas.id!=='uvChart') return;
+    const {ctx, chartArea:{left,right}, scales:{y}} = chart;
+    ctx.save();
+    let prev = y.getPixelForValue(0);
+    for(const b of UV_BANDS){
+      const yPix = y.getPixelForValue(b.max);
+      ctx.fillStyle = b.color;
+      ctx.fillRect(left, yPix, right-left, prev-yPix);
+      prev = yPix;
+    }
+    ctx.restore();
+  }
+};
+Chart.register(uvBackgroundPlugin);
+
+init();
+
+async function init() {
+  qEl.value = DEFAULT_LOC.name;
+  if (useObsEl) useObsEl.checked = true;
+
+  $('#searchBtn').addEventListener('click', ()=> onSearch());
+  const locBtn = $('#locBtn');
+  if (locBtn) locBtn.addEventListener('click', ()=> useCurrentLocation());
+  if (useObsEl) useObsEl.addEventListener('change', ()=> refresh());
+  initSunShadowSimulator();
+  await initMap();
+  useCurrentLocation();
+}
+
+/* 位置 */
+
+function useCurrentLocation(){
+  if (!navigator.geolocation){
+    loadFor(DEFAULT_LOC);
+    return;
+  }
+  setStatus('Locating…');
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      const loc = {
+        name: 'Your location',
+        lat: pos.coords.latitude,
+        lon: pos.coords.longitude,
+        tz: 'auto'
+      };
+      qEl.value = loc.name;
+      loadFor(loc);
+    },
+    () => {
+      loadFor(DEFAULT_LOC);
+    },
+    { enableHighAccuracy:true, timeout:10000, maximumAge:600000 }
+  );
+}
+
+async function onSearch() {
+  const q = qEl.value.trim();
+  if (!q) return;
+  setStatus('Searching…');
+  try{
+    const url = `${OM_GEOCODE}?name=${encodeURIComponent(q)}&count=5&language=en&format=json`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if(!data.results || data.results.length===0){
+      setStatus('Location not found');
+      return;
+    }
+    let r = data.results.find(x=>x.country_code==='AU') || data.results[0];
+    const loc = {
+      name: `${r.name}${r.admin1? ', '+r.admin1:''}${r.country_code? ', '+r.country_code:''}`,
+      lat: r.latitude,
+      lon: r.longitude,
+      tz: r.timezone
+    };
+    qEl.value = loc.name;
+    await loadFor(loc);
+  }catch(e){
+    setStatus('Search error');
+    console.error(e);
+  }
+}
+
+function setStatus(t){ statusEl.textContent = t || ''; }
+
+/* 主載入 */
+
+async function loadFor(loc){
+  const loadId = ++loadSequence;
+  loc.bomStation = findNearbyBomStation(loc);
+  setStatus(`Loading forecast for ${loc.name}…`);
+  const [fusion, bom, obs, fusionCurrent, airQ] = await Promise.allSettled([
+    fetchFusion(loc),
+    fetchBom(loc),
+    fetchBomObsMaybe(loc),
+    fetchFusionCurrent(loc),
+    fetchAirQuality(loc)
+  ]);
+
+  const fusionData  = fusion.status==='fulfilled' ? fusion.value  : null;
+  const bomData     = bom.status==='fulfilled'    ? bom.value     : null;
+  const obsData     = obs.status==='fulfilled'    ? obs.value     : null;
+  const currentData = fusionCurrent.status==='fulfilled' ? fusionCurrent.value : null;
+  const aqiData     = airQ.status==='fulfilled'   ? airQ.value   : null;
+
+  if(loadId !== loadSequence) return;
+  if(!fusionData){
+    setStatus('Open-Meteo forecast failed');
+    return;
+  }
+
+  const corrected = (loc.bomStation && useObsEl && useObsEl.checked && obsData && currentData)
+    ? applyBiasCorrection(fusionData, currentData, obsData)
+    : fusionData;
+
+  lastFusion = corrected;
+  selectedLocation = {
+    name:loc.name,
+    lat:Number(loc.lat),
+    lon:Number(loc.lon),
+    timezone:corrected.timezone || loc.tz || 'auto'
+  };
+
+  renderNext24Block(corrected);
+  renderCurrent(corrected, bomData, aqiData);
+  renderSun(corrected, loc);
+  renderDailyIcons(corrected);
+  renderHumidity(corrected);
+  renderUV(corrected);
+  renderWindTable(corrected);
+  renderDaily(corrected, bomData);
+  updateSunShadowSimulator(selectedLocation);
+
+  moveCenter(loc.lat, loc.lon);
+  updateLocationMarker(loc.lat, loc.lon);
+
+  await refreshFrames();
+  setStatus('');
+}
+
+/* Open-Meteo */
+
+async function fetchFusion(loc){
+  const url = new URL(OM_FORECAST);
+  url.searchParams.set('latitude', loc.lat);
+  url.searchParams.set('longitude', loc.lon);
+  url.searchParams.set('timezone', loc.tz || 'auto');
+  url.searchParams.set('forecast_days','10');  // 10 日
+  url.searchParams.set('hourly', [
+    'temperature_2m','precipitation_probability','precipitation','rain','showers',
+    'cloud_cover','wind_speed_10m','wind_gusts_10m','wind_direction_10m',
+    'relative_humidity_2m','uv_index'
+  ].join(','));
+  url.searchParams.set('daily', [
+    'sunrise','sunset',
+    'temperature_2m_max','temperature_2m_min','precipitation_sum',
+    'precipitation_probability_max','wind_speed_10m_max','wind_gusts_10m_max',
+    'uv_index_max','weather_code'
+  ].join(','));
+  const resp = await fetch(url);
+  if(!resp.ok) throw new Error('fusion fetch failed');
+  return resp.json();
+}
+
+async function fetchFusionCurrent(loc){
+  const url = new URL(OM_FORECAST);
+  url.searchParams.set('latitude', loc.lat);
+  url.searchParams.set('longitude', loc.lon);
+  url.searchParams.set('timezone', loc.tz || 'auto');
+  url.searchParams.set('current', [
+    'temperature_2m','apparent_temperature',
+    'wind_speed_10m','wind_direction_10m',
+    'relative_humidity_2m','uv_index'
+  ].join(','));
+  const resp = await fetch(url);
+  if(!resp.ok) throw new Error('fusion current failed');
+  return resp.json();
+}
+
+async function fetchBom(loc){
+  const url = new URL(OM_BOM);
+  url.searchParams.set('latitude', loc.lat);
+  url.searchParams.set('longitude', loc.lon);
+  url.searchParams.set('timezone', loc.tz || 'GMT');
+  url.searchParams.set('forecast_days','10');
+  url.searchParams.set('hourly', [
+    'temperature_2m','precipitation','rain','showers',
+    'cloud_cover','wind_speed_10m','wind_gusts_10m','wind_direction_10m'
+  ].join(','));
+  url.searchParams.set('daily', [
+    'temperature_2m_max','temperature_2m_min','precipitation_sum',
+    'wind_speed_10m_max','wind_gusts_10m_max'
+  ].join(','));
+  const resp = await fetch(url);
+  if(!resp.ok) throw new Error('bom fetch failed');
+  return resp.json();
+}
+
+async function fetchAirQuality(loc){
+  const url = new URL(OM_AIR);
+  url.searchParams.set('latitude', loc.lat);
+  url.searchParams.set('longitude', loc.lon);
+  url.searchParams.set('timezone', loc.tz || 'auto');
+  url.searchParams.set('hourly', 'us_aqi');
+  const resp = await fetch(url);
+  if(!resp.ok) throw new Error('air quality fetch failed');
+  return resp.json();
+}
+
+async function fetchBomObsMaybe(loc){
+  if(!useObsEl || !useObsEl.checked || !loc.bomStation) return null;
+  const obsUrl = loc.bomStation.obsUrl;
+  const url = BOM_PROXY_PREFIX ? (BOM_PROXY_PREFIX + encodeURIComponent(obsUrl)) : obsUrl;
+  const resp = await fetch(url, { cache:'no-store' });
+  if(!resp.ok) throw new Error('obs fetch failed');
+  const data = await resp.json();
+  const rows = data?.observations?.data ?? [];
+  return rows.length ? rows[rows.length-1] : null;
+}
+
+/* Bias correction */
+
+function applyBiasCorrection(fusion, fusionCurrent, obs){
+  try{
+    const dt = Number(obs.air_temp)     - Number(fusionCurrent.current?.temperature_2m ?? NaN);
+    const dw = Number(obs.wind_spd_kmh) - Number(fusionCurrent.current?.wind_speed_10m ?? NaN);
+    const out = structuredClone(fusion);
+    if(isFinite(dt)) out.hourly.temperature_2m = out.hourly.temperature_2m.map(v=>round1(v+dt));
+    if(isFinite(dw)) out.hourly.wind_speed_10m = out.hourly.wind_speed_10m.map(v=>round1(v+dw));
+    return out;
+  }catch{
+    return fusion;
+  }
+}
+
+/* 搵最接近而家嗰個 hour index */
+
+function getNearestHourIndex(timeArr){
+  if(!timeArr || !timeArr.length) return 0;
+  const now = Date.now();
+  let idx = 0;
+  let bestDiff = Infinity;
+  for(let i=0;i<timeArr.length;i++){
+    const d = new Date(timeArr[i]).getTime();
+    const diff = Math.abs(d - now);
+    if(diff < bestDiff){
+      bestDiff = diff;
+      idx = i;
+    }
+  }
+  return idx;
+}
+
+/* 卡 1：24 小時（Time → Temp → Rain%） */
+
+function renderNext24Block(fusion){
+  const time = fusion.hourly.time;
+  const temp = fusion.hourly.temperature_2m;
+  const pop  = fusion.hourly.precipitation_probability || [];
+
+  if(!time || !time.length) return;
+
+  const startIdx = getNearestHourIndex(time);
+
+  const titleEl = $('#nowTitle');
+  if (titleEl){
+    const nowTemp = temp[startIdx];
+    const nowPop  = pop[startIdx];
+    const tmax = fusion.daily?.temperature_2m_max?.[0];
+    const tmin = fusion.daily?.temperature_2m_min?.[0];
+
+    const tLabel = (nowTemp!=null && isFinite(nowTemp)) ? `${round1(nowTemp)}°C` : '--°C';
+    const pLabel = (nowPop !=null && isFinite(nowPop))  ? `${nowPop}%`          : '--%';
+
+    let hiLoHtml = '';
+    if(tmax != null && tmin != null){
+      hiLoHtml = `<span class="hiLo"> · H ${round1(tmax)}° / L ${round1(tmin)}°</span>`;
+    }
+
+    titleEl.innerHTML = `${tLabel} · ${pLabel}${hiLoHtml}`;
+  }
+
+  const maxPoints = 24;
+  const strip = $('#next12Strip');
+  strip.innerHTML = '';
+
+  for(let i=startIdx;i<Math.min(startIdx+maxPoints, time.length);i++){
+    const tVal = temp[i] != null ? `${round1(temp[i])}°` : '–';
+    const pVal = pop[i]  != null ? `${pop[i]}%`          : '–';
+    const tLabel = timeLabelWithDow(time[i]);  // 已有 am/pm + 12am 加星期
+
+    const div = document.createElement('div');
+    div.className = 'hour-block';
+    div.innerHTML = `
+      <div class="hour-time muted">${tLabel}</div>
+      <div class="hour-temp">${tVal}</div>
+      <div class="hour-rain">${pVal}</div>
+    `;
+    strip.appendChild(div);
+  }
+}
+
+/* 卡 2：Current + AQ */
+
+function renderCurrent(fusion, bom, aqi){
+  const k = $('#currentKpi'); k.innerHTML='';
+  const time = fusion.hourly.time;
+  if(!time || !time.length){
+    k.innerHTML = '<div class="muted">No data</div>';
+    return;
+  }
+  const idx = getNearestHourIndex(time);
+
+  const w  = round1(fusion.hourly.wind_speed_10m[idx]);
+  const wdRaw = fusion.hourly.wind_direction_10m?.[idx];
+  const wd = displayWindDeg(wdRaw);
+  const rh = fusion.hourly.relative_humidity_2m?.[idx];
+  const uv = fusion.hourly.uv_index?.[idx];
+
+  let aqStr = '—';
+  if(aqi?.hourly?.time && aqi.hourly.time.length){
+    const aIdx = getNearestHourIndex(aqi.hourly.time);
+    const usAqi = aqi.hourly.us_aqi?.[aIdx];
+    if(usAqi != null && isFinite(usAqi)){
+      aqStr = `${Math.round(usAqi)} ${aqCategory(usAqi)}`;
+    }
+  }
+
+  add('Humidity', rh!=null? `${Math.round(rh)}%`:'—');
+  add('Wind speed', `${w} km/h`);
+  add('Wind direction', wd!=null? `${degToCompass(wd)} (${Math.round(wd)}°)`:'—');
+  add('UV', uv!=null? uv.toFixed(1):'—');
+  add('Air quality', aqStr);
+
+  function add(kname, v){
+    const d=document.createElement('div');
+    d.className='item';
+    d.innerHTML=`<div class="k">${kname}</div><div class="v">${v}</div>`;
+    k.appendChild(d);
+  }
+}
+
+/* Sunrise / Sunset / Moon */
+
+function renderSun(fusion, loc){
+  const box = $('#sunBox'); box.innerHTML='';
+  const d = fusion.daily;
+  if(!d?.sunrise?.length){
+    box.innerHTML = `<div class="muted">No sunrise / sunset data</div>`;
+    return;
+  }
+  const todayIdx = 0;
+  const sunrise = new Date(d.sunrise[todayIdx]);
+  const sunset  = new Date(d.sunset[todayIdx]);
+
+  const azRise = sunAzimuthDeg(loc.lat, loc.lon, sunrise);
+  const azSet  = sunAzimuthDeg(loc.lat, loc.lon, sunset);
+
+  add('Sunrise', fmtTime(sunrise, fusion.timezone), `${degToCompass(azRise)} (${Math.round(azRise)}°)`);
+  add('Sunset',  fmtTime(sunset,  fusion.timezone), `${degToCompass(azSet)} (${Math.round(azSet)}°)`);
+
+  const newMoonList = findMoonPhases(0, 3);
+  const fullMoon    = findNextMoonPhase(0.5);
+
+  if(newMoonList.length){
+    addMoon('New moon', newMoonList[0], fusion.timezone, newMoonList);
+  }
+  if(fullMoon){
+    addMoon('Full moon', fullMoon, fusion.timezone);
+  }
+
+  function add(label, t, az){
+    const d=document.createElement('div');
+    d.className='item';
+    d.innerHTML=`<div class="k">${label}</div><div class="v">${t}</div><div class="muted">${az}</div>`;
+    box.appendChild(d);
+  }
+
+  function addMoon(label, dt, tz, extraList){
+    const dateStr = dt.toLocaleDateString(undefined,{
+      year:'numeric',month:'short',day:'numeric'
+    });
+    const dow = dt.toLocaleDateString(undefined,{ weekday:'short' });
+    const timeStr = fmtTime(dt, tz);
+
+    const d=document.createElement('div');
+    d.className='item';
+    d.innerHTML=
+      `<div class="k">${label}</div>` +
+      `<div class="v">${dateStr}</div>` +
+      `<div class="muted">${dow} ${timeStr}</div>`;
+
+    if(label === 'New moon' && extraList && extraList.length){
+      d.classList.add('clickable-moon');
+      const extraDiv=document.createElement('div');
+      extraDiv.className='muted';
+      extraDiv.style.display='none';
+      extraDiv.style.marginTop='4px';
+      extraDiv.dataset.role='new-moon-extra';
+      d.appendChild(extraDiv);
+
+      d.addEventListener('click', ()=>{
+        const visible = extraDiv.style.display !== 'none';
+        if(visible){
+          extraDiv.style.display='none';
+        }else{
+          if(!extraDiv.dataset.filled){
+            const lines = extraList.map(dt2=>{
+              return dt2.toLocaleDateString(undefined,{
+                year:'numeric',month:'short',day:'numeric',weekday:'short'
+              });
+            });
+            extraDiv.innerHTML = lines.join('<br>');
+            extraDiv.dataset.filled = '1';
+          }
+          extraDiv.style.display='block';
+        }
+      });
+    }
+
+    box.appendChild(d);
+  }
+}
+
+/* Open-Meteo WMO codes mapped to the supplied monochrome SVG set. */
+
+function iconFromWeatherCode(w){
+  const code = Number(w);
+  if(code === 0) return {file:'clear.svg', label:'Clear'};
+  if(code === 1 || code === 2) return {file:'partly_cloudy.svg', label:'Partly cloudy'};
+  if(code === 3) return {file:'cloudy.svg', label:'Cloudy'};
+  if(code === 45 || code === 48) return {file:'fog.svg', label:'Fog'};
+  if([51,53,56,61].includes(code)) return {file:'light_rain.svg', label:'Light rain'};
+  if([55,57,63,65,66,67,82].includes(code)) return {file:'heavy_rain.svg', label:'Heavy rain'};
+  if(code === 80 || code === 81) return {file:'sun_cloud_rain.svg', label:'Rain showers'};
+  if([71,73,75,77,85,86].includes(code)) return {file:'snow.svg', label:'Snow'};
+  if(code === 95) return {file:'thunder.svg', label:'Thunderstorm'};
+  if(code === 96 || code === 99) return {file:'hail.svg', label:'Thunderstorm with hail'};
+  return {file:'cloudy.svg', label:'Cloudy'};
+}
+
+/* 10-day icons（點擊展開／收起 Rain 24h） */
+
+function renderDailyIcons(fusion){
+  const box = $('#dailyIcons'); box.innerHTML='';
+  const d = fusion.daily;
+  selectedRainDay = null;
+  const rainCard = $('#rain24Card');
+  if(rainCard) rainCard.style.display='none';
+
+  if(!d?.time?.length){ box.innerHTML = `<div class="muted">No data</div>`; return; }
+
+  const days  = d.time;
+  const codes = d.weather_code || [];
+  const maxTemps = d.temperature_2m_max || [];
+  const minTemps = d.temperature_2m_min || [];
+  const rainProb = d.precipitation_probability_max || [];
+  const rainAmount = d.precipitation_sum || [];
+  const n = Math.min(10, days.length);
+
+  for(let i=0;i<n;i++){
+    const dateStr = days[i];
+    const wcode = codes[i];
+    const weather = iconFromWeatherCode(wcode);
+
+    const dObj = new Date(dateStr + 'T00:00');
+    const shortDow = dObj.toLocaleDateString(undefined,{ weekday:'short' });
+    const dayLabel = (i===0) ? 'Today' : shortDow;
+
+    const div = document.createElement('div');
+    div.className = 'icons-day';
+    div.dataset.dayIndex = i;
+    div.setAttribute('role', 'button');
+    div.setAttribute('tabindex', '0');
+    div.setAttribute('aria-label', `${dayLabel}: ${weather.label}. High ${spokenNumber(maxTemps[i])} degrees, low ${spokenNumber(minTemps[i])} degrees. Rain ${spokenNumber(rainProb[i])} percent, ${spokenNumber(rainAmount[i])} millimetres.`);
+    div.innerHTML = `
+      <img class="icons-icon" src="icons/${weather.file}" alt="${weather.label}">
+      <div class="icons-date">${dayLabel}</div>
+      <div class="icons-temp">${formatTemp(maxTemps[i])} / <span class="muted">${formatTemp(minTemps[i])}</span></div>
+      <div class="icons-rain">${rainProb[i] != null ? Math.round(rainProb[i]) + '%' : '—'} · ${formatMm(rainAmount[i])}</div>
+    `;
+    const toggleDay = () => {
+      const card = $('#rain24Card');
+      if(selectedRainDay === i){
+        selectedRainDay = null;
+        if(card) card.style.display='none';
+      }else{
+        selectedRainDay = i;
+        if(card) card.style.display='block';
+        renderDayRain(i);
+      }
+    };
+    div.addEventListener('click', toggleDay);
+    div.addEventListener('keydown', event => {
+      if(event.key === 'Enter' || event.key === ' '){
+        event.preventDefault();
+        toggleDay();
+      }
+    });
+    box.appendChild(div);
+  }
+}
+
+/* Daily rain: amount bars plus probability line. */
+
+function renderDayRain(dayIdx){
+  if(!lastFusion) return;
+  const d = lastFusion.daily;
+  const h = lastFusion.hourly;
+  if(!d?.time?.length || !h?.time?.length) return;
+
+  const dayStr = d.time[dayIdx];
+  const labels = [];
+  const probability = [];
+  const amount = [];
+
+  for(let i=0;i<h.time.length;i++){
+    if(h.time[i].startsWith(dayStr)){
+      labels.push(timeLabelWithDow(h.time[i]));
+      const p = h.precipitation_probability?.[i];
+      const mm = h.precipitation?.[i];
+      probability.push(p != null ? p : null);
+      amount.push(mm != null ? mm : 0);
+    }
+  }
+
+  const title = $('#dayRainTitle');
+  if(title){
+    const dt = new Date(dayStr + 'T00:00');
+    const dow = dt.toLocaleDateString(undefined,{ weekday:'short' });
+    const md  = dt.toLocaleDateString(undefined,{ month:'short', day:'numeric' });
+    title.textContent = `Rain · ${dow} ${md}`;
+  }
+
+  const ctx = $('#dayRainChart').getContext('2d');
+  if(dayRainChart) dayRainChart.destroy();
+  if(!labels.length){
+    dayRainChart = new Chart(ctx,{
+      type:'bar',
+      data:{ labels:['—'], datasets:[{ label:'Precipitation amount', data:[0], backgroundColor:'rgba(0,0,0,.16)'}]},
+      options:{ scales:{ y:{ suggestedMin:0,suggestedMax:100 } } }
+    });
+    return;
+  }
+
+  dayRainChart = new Chart(ctx,{
+    type:'bar',
+    data:{
+      labels,
+      datasets:[
+        {
+          type:'bar',
+          label:'Precipitation amount (mm)',
+          data:amount,
+          yAxisID:'yAmount',
+          backgroundColor:'rgba(0,0,0,.16)',
+          borderColor:'#555555',
+          borderWidth:1
+        },
+        {
+          type:'line',
+          label:'Precipitation probability (%)',
+          data:probability,
+          yAxisID:'yProbability',
+          borderColor:'#111111',
+          backgroundColor:'#111111',
+          pointRadius:2,
+          pointHoverRadius:4,
+          tension:.25
+        }
+      ]
+    },
+    options:{
+      responsive:true,
+      plugins:{
+        legend:{ labels:{ boxWidth:12 } },
+        tooltip:{
+          callbacks:{
+            label:(c)=> c.dataset.yAxisID === 'yProbability'
+              ? `${c.dataset.label}: ${c.parsed.y}%`
+              : `${c.dataset.label}: ${round1(c.parsed.y)} mm`
+          }
+        }
+      },
+      scales:{
+        yProbability:{
+          type:'linear',
+          position:'left',
+          beginAtZero:true,
+          min:0,
+          max:100,
+          title:{display:true,text:'Probability (%)'},
+          ticks:{
+            stepSize:20,
+            callback:(v)=>`${v}%`
+          }
+        },
+        yAmount:{
+          type:'linear',
+          position:'right',
+          beginAtZero:true,
+          title:{display:true,text:'Amount (mm)'},
+          grid:{drawOnChartArea:false},
+          ticks:{callback:(v)=>`${v} mm`}
+        }
+      }
+    }
+  });
+}
+
+/* Humidity（48h） */
+
+function renderHumidity(fusion){
+  const time  = fusion.hourly.time;
+  const RH = fusion.hourly.relative_humidity_2m || [];
+
+  const startIdx = getNearestHourIndex(time);
+  const maxPoints = 48;
+  const labels = [];
+  const data   = [];
+
+  for(let i=startIdx;i<Math.min(startIdx+maxPoints, time.length);i++){
+    labels.push(timeLabelWithDow(time[i]));
+    data.push(RH[i]);
+  }
+
+  const ctx = $('#humChart').getContext('2d');
+  if(humChart) humChart.destroy();
+  humChart = new Chart(ctx, {
+    type:'line',
+    data:{
+      labels,
+      datasets:[{
+        label:'Relative humidity %',
+        data,
+        borderColor:'#222222',
+        backgroundColor:'rgba(0,0,0,0.03)'
+      }]
+    },
+    options:{
+      responsive:true,
+      scales:{ y:{ suggestedMin:0, suggestedMax:100, title:{display:true,text:'%'} } }
+    }
+  });
+}
+
+/* UV（當日 0:00 起 24h） */
+
+function renderUV(fusion){
+  const time  = fusion.hourly.time;
+  const UV = fusion.hourly.uv_index || [];
+  const daily0 = fusion.daily?.time?.[0];
+
+  if(!time || !time.length){
+    return;
+  }
+
+  let startIdx = 0;
+  if(daily0){
+    const targetPrefix = daily0;
+    const idx = time.findIndex(t => t.startsWith(targetPrefix));
+    startIdx = idx >= 0 ? idx : getNearestHourIndex(time);
+  }else{
+    startIdx = getNearestHourIndex(time);
+  }
+
+  const maxPoints = 24;
+  const labels = [];
+  const data   = [];
+
+  for(let i=startIdx;i<Math.min(startIdx+maxPoints, time.length);i++){
+    labels.push(timeLabelWithDow(time[i]));
+    data.push(UV[i]);
+  }
+
+  const ctx = $('#uvChart').getContext('2d');
+  if(uvChart) uvChart.destroy();
+  uvChart = new Chart(ctx, {
+    type:'line',
+    data:{
+      labels,
+      datasets:[{
+        label:'',
+        data,
+        borderColor:'#222222',
+        backgroundColor:'rgba(0,0,0,0.03)'
+      }]
+    },
+    options:{
+      responsive:true,
+      plugins:{
+        legend:{ display:false },
+        tooltip:{ callbacks:{ label:(c)=>`UV ${Number(c.parsed.y).toFixed(1)}` } }
+      },
+      scales:{ y:{ suggestedMin:0, title:{display:true,text:'UV'} } }
+    }
+  });
+}
+
+/* Wind 表（每 3 小時一行） */
+
+function renderWindTable(fusion){
+  const time = fusion.hourly.time;
+  const spd  = fusion.hourly.wind_speed_10m || [];
+  const dir  = fusion.hourly.wind_direction_10m || [];
+  if(!time || !time.length){
+    $('#windTable').innerHTML = '<div class="muted">No wind data</div>';
+    return;
+  }
+
+  const startIdx = getNearestHourIndex(time);
+  const maxHours = 24;
+
+  const rows = [];
+  rows.push(`
+    <div class="wind-row wind-header">
+      <div class="wind-time">Time</div>
+      <div class="wind-dir">Direction</div>
+      <div class="wind-speed">Speed</div>
+    </div>
+  `);
+
+  for(let i=startIdx;i<Math.min(startIdx+maxHours, time.length);i++){
+    if((i - startIdx) % 3 !== 0) continue;
+    const hhLabel = timeLabelWithDow(time[i]);
+    const dDisplay = displayWindDeg(dir[i]);
+    const s  = spd[i];
+    const arrow = arrowFromDeg(dDisplay);
+    const dirText = `${arrow} ${degToCompass(dDisplay)} (${Math.round(dDisplay)}°)`;
+    rows.push(`
+      <div class="wind-row">
+        <div class="wind-time">${hhLabel}</div>
+        <div class="wind-dir">${dirText}</div>
+        <div class="wind-speed">${round1(s)} km/h</div>
+      </div>
+    `);
+  }
+  $('#windTable').innerHTML = `<div class="wind-grid">${rows.join('')}</div>`;
+}
+
+/* 7 Days 卡（日期＋星期，不顯示年份） */
+
+function renderDaily(fusion, bom){
+  const d = fusion.daily;
+  const rows = [];
+  for(let i=0;i<d.time.length;i++){
+    const date = d.time[i];
+    const dt = new Date(date + 'T00:00');
+    const dow = dt.toLocaleDateString(undefined,{ weekday:'short' });
+    const md  = dt.toLocaleDateString(undefined,{ month:'short', day:'numeric' });
+    const label = `${dow} ${md}`;
+
+    const tmax = d.temperature_2m_max[i];
+    const tmin = d.temperature_2m_min[i];
+    const pSum = d.precipitation_sum?.[i] ?? 0;
+    const pMax = d.precipitation_probability_max?.[i] ?? null;
+    const uvMax = d.uv_index_max?.[i] ?? null;
+    rows.push(`<tr>
+      <td>${label}</td>
+      <td>${round1(tmin)} / ${round1(tmax)} °C</td>
+      <td>${pMax!=null? pMax+'%':'—'}</td>
+      <td>${round1(pSum)} mm</td>
+      <td>${uvMax!=null? uvMax.toFixed(1):'—'}</td>
+    </tr>`);
+  }
+  $('#dailyTable').innerHTML = `<table>
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Temp (min / max)</th>
+        <th>Max rain prob.</th>
+        <th>Precip (blend)</th>
+        <th>Max UV</th>
+      </tr>
+    </thead>
+    <tbody>${rows.join('')}</tbody>
+  </table>`;
+}
+
+/* Sun and Shadow Simulator */
+
+function initSunShadowSimulator(){
+  const dateInput = $('#sunShadowDate');
+  const timeInput = $('#sunShadowTime');
+  dateInput.value = dateStringInTimeZone(new Date(), DEFAULT_LOC.tz);
+
+  dateInput.addEventListener('change', () => {
+    configureSunShadowDay(true);
+  });
+  timeInput.addEventListener('input', renderCurrentSunShadow);
+  $('#sunShadowNorthUp').addEventListener('click', () => setSunShadowOrientationMode('north'));
+  $('#sunShadowPhoneMode').addEventListener('click', requestPhoneCompassPermission);
+
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(renderCurrentSunShadow, 120);
+  });
+  initSunShadowWebGl();
+  initSunShadowCameraControls();
+  initPhoneCompass();
+}
+
+function initSunShadowCameraControls(){
+  const canvas = $('#sunShadowCanvas');
+  canvas.addEventListener('pointerdown', event => {
+    event.preventDefault();
+    sunShadowPointers.set(event.pointerId,{x:event.clientX,y:event.clientY});
+    try{ canvas.setPointerCapture(event.pointerId); }catch{}
+    if(sunShadowPointers.size === 2){
+      const points = [...sunShadowPointers.values()];
+      sunShadowPinchStart = {
+        distance:Math.hypot(points[0].x-points[1].x,points[0].y-points[1].y),
+        cameraDistance:getSunShadowCameraDistance()
+      };
+    }
+  });
+  canvas.addEventListener('pointermove', event => {
+    const previous = sunShadowPointers.get(event.pointerId);
+    if(!previous) return;
+    event.preventDefault();
+    sunShadowPointers.set(event.pointerId,{x:event.clientX,y:event.clientY});
+
+    if(sunShadowPointers.size === 1){
+      sunShadowCamera.yaw += (event.clientX - previous.x) * 0.32;
+      sunShadowCamera.pitch = clamp(
+        sunShadowCamera.pitch - (event.clientY - previous.y) * 0.28,
+        12,
+        85
+      );
+      scheduleSunShadowRender();
+      return;
+    }
+
+    if(sunShadowPointers.size === 2 && sunShadowPinchStart){
+      const points = [...sunShadowPointers.values()];
+      const distance = Math.hypot(points[0].x-points[1].x,points[0].y-points[1].y);
+      if(distance > 10){
+        setSunShadowCameraDistance(sunShadowPinchStart.cameraDistance * sunShadowPinchStart.distance / distance);
+        scheduleSunShadowRender();
+      }
+    }
+  });
+  const finishPointer = event => {
+    sunShadowPointers.delete(event.pointerId);
+    if(sunShadowPointers.size < 2) sunShadowPinchStart = null;
+  };
+  canvas.addEventListener('pointerup',finishPointer);
+  canvas.addEventListener('pointercancel',finishPointer);
+  canvas.addEventListener('wheel',event => {
+    event.preventDefault();
+    const factor = Math.exp(event.deltaY * 0.0015);
+    setSunShadowCameraDistance(getSunShadowCameraDistance() * factor);
+    scheduleSunShadowRender();
+  },{passive:false});
+  canvas.addEventListener('dblclick',event => {
+    event.preventDefault();
+    resetSunShadowView();
+  });
+}
+
+function getSunShadowCameraDistance(){
+  return sunShadowCamera.distanceMap;
+}
+
+function setSunShadowCameraDistance(distance){
+  sunShadowCamera.distanceMap = clamp(distance,90,480);
+}
+
+function resetSunShadowView(){
+  sunShadowCamera.yaw = -35;
+  sunShadowCamera.pitch = 48;
+  sunShadowCamera.distanceMap = 230;
+  scheduleSunShadowRender();
+}
+
+function scheduleSunShadowRender(){
+  if(sunShadowRenderFrame) return;
+  sunShadowRenderFrame = requestAnimationFrame(() => {
+    sunShadowRenderFrame = null;
+    renderCurrentSunShadow();
+  });
+}
+
+function updateSunShadowSimulator(loc){
+  const newKey = `${Number(loc.lat).toFixed(5)},${Number(loc.lon).toFixed(5)}`;
+  const locationChanged = newKey !== sunShadowLocationKey;
+  selectedLocation = {...loc};
+  sunShadowLocationKey = newKey;
+
+  if(locationChanged){
+    sunShadowBuildings = [];
+    sunShadowElevation = null;
+    $('#sunShadowStatus').textContent = '';
+    loadSunShadowMapContext(selectedLocation);
+  }
+
+  const dateInput = $('#sunShadowDate');
+  if(!dateInput.value){
+    dateInput.value = dateStringInTimeZone(new Date(), loc.timezone);
+  }
+  $('#sunShadowLocation').textContent = loc.name;
+  configureSunShadowDay(locationChanged);
+
+}
+
+function configureSunShadowDay(resetTime){
+  const dateInput = $('#sunShadowDate');
+  const slider = $('#sunShadowTime');
+  if(!isFinite(selectedLocation?.lat) || !isFinite(selectedLocation?.lon) || !dateInput.value) return;
+
+  const tz = selectedLocation.timezone || 'UTC';
+  const localNoon = zonedDateTimeToDate(dateInput.value, 12 * 60, tz);
+  const times = SunCalc.getTimes(localNoon, selectedLocation.lat, selectedLocation.lon);
+  let sunriseMinutes = minutesInTimeZone(times.sunrise, tz);
+  let sunsetMinutes = minutesInTimeZone(times.sunset, tz);
+
+  if(!isFinite(sunriseMinutes) || !isFinite(sunsetMinutes) || sunsetMinutes <= sunriseMinutes){
+    sunriseMinutes = 6 * 60;
+    sunsetMinutes = 18 * 60;
+  }
+
+  sunriseMinutes = Math.ceil(sunriseMinutes / 5) * 5;
+  sunsetMinutes = Math.floor(sunsetMinutes / 5) * 5;
+  slider.min = String(sunriseMinutes);
+  slider.max = String(sunsetMinutes);
+
+  if(resetTime || Number(slider.value) < sunriseMinutes || Number(slider.value) > sunsetMinutes){
+    const today = dateStringInTimeZone(new Date(), tz);
+    const nowMinutes = minutesInTimeZone(new Date(), tz);
+    slider.value = String(dateInput.value === today && nowMinutes >= sunriseMinutes && nowMinutes <= sunsetMinutes
+      ? Math.round(nowMinutes / 5) * 5
+      : Math.round((sunriseMinutes + sunsetMinutes) / 10) * 5);
+  }
+
+  $('#sunShadowSunrise').textContent = `Sunrise ${formatMinutes(sunriseMinutes)}`;
+  $('#sunShadowSunset').textContent = `Sunset ${formatMinutes(sunsetMinutes)}`;
+  renderCurrentSunShadow();
+}
+
+function renderCurrentSunShadow(){
+  if(!selectedLocation?.lat) return;
+  const dateValue = $('#sunShadowDate').value;
+  const minutes = Number($('#sunShadowTime').value);
+  const tz = selectedLocation.timezone || 'UTC';
+  const selectedDate = zonedDateTimeToDate(dateValue, minutes, tz);
+  const result = calculateSunShadow(selectedDate, selectedLocation.lat, selectedLocation.lon);
+  result.location = selectedLocation;
+  result.timezone = tz;
+  result.buildings = sunShadowBuildings;
+  result.elevation = sunShadowElevation;
+  result.mode = sunShadowMode;
+  result.orientationMode = sunShadowOrientationMode;
+  result.phoneHeading = phoneHeading;
+
+  const timeLabel = formatTime(selectedDate, tz);
+  $('#sunShadowTimeLabel').textContent = timeLabel;
+  $('#sunShadowSummaryTime').textContent = timeLabel;
+  $('#sunShadowSunDirection').textContent =
+    `${degToCompass16(result.sunAzimuth)} ${Math.round(result.sunAzimuth)}°`;
+  $('#sunShadowAltitude').textContent = `${round1(result.sunAltitude)}°`;
+  $('#sunShadowDirection').textContent = result.hasDirectShadow
+    ? `${degToCompass16(result.shadowAzimuth)} ${Math.round(result.shadowAzimuth)}°`
+    : '—';
+  $('#sunShadowLength').textContent = result.hasDirectShadow
+    ? `${result.realShadowLength.toFixed(2)} m`
+    : '—';
+  $('#sunShadowPhoneHeading').textContent = Number.isFinite(phoneHeading)
+    ? `${Math.round(phoneHeading)}°`
+    : '—';
+  $('#sunShadowHorizon').textContent = result.hasDirectShadow
+    ? ''
+    : 'Sun is below horizon. No direct shadow.';
+  renderSunShadowScene(result);
+}
+
+function calculateSunShadow(date, lat, lon){
+  const position = SunCalc.getPosition(date, lat, lon);
+  const sunAzimuth = (position.azimuth * 180 / Math.PI + 180 + 360) % 360;
+  const sunAltitude = position.altitude * 180 / Math.PI;
+  const shadowAzimuth = (sunAzimuth + 180) % 360;
+  const hasDirectShadow = sunAltitude > 0;
+  const altitudeRadians = Math.max(position.altitude, 0.001);
+  const realShadowLength = hasDirectShadow
+    ? 1 / Math.tan(altitudeRadians)
+    : 0;
+  return {
+    date,
+    sunAzimuth,
+    sunAltitude,
+    shadowAzimuth,
+    realShadowLength,
+    hasDirectShadow
+  };
+}
+
+function initPhoneCompass(){
+  updateCompassOverlay();
+  if(!window.DeviceOrientationEvent){
+    $('#sunShadowCompassStatus').textContent = 'Phone compass not supported on this browser';
+  }
+}
+
+async function requestPhoneCompassPermission(){
+  if(!window.DeviceOrientationEvent){
+    $('#sunShadowCompassStatus').textContent = 'Phone compass not supported on this browser';
+    setSunShadowOrientationMode('north');
+    return false;
+  }
+
+  try{
+    if(typeof DeviceOrientationEvent.requestPermission === 'function'){
+      const permission = await DeviceOrientationEvent.requestPermission();
+      if(permission !== 'granted'){
+        $('#sunShadowCompassStatus').textContent = 'Phone compass permission denied';
+        setSunShadowOrientationMode('north');
+        return false;
+      }
+    }
+    if(!phoneCompassListening){
+      phoneCompassEventName = 'ondeviceorientationabsolute' in window
+        ? 'deviceorientationabsolute'
+        : 'deviceorientation';
+      window.addEventListener(phoneCompassEventName, handleDeviceOrientation, true);
+      phoneCompassListening = true;
+    }
+    setSunShadowOrientationMode('phone');
+    $('#sunShadowCompassStatus').textContent = 'Waiting for phone compass…';
+    clearTimeout(phoneCompassTimer);
+    phoneCompassTimer = setTimeout(() => {
+      if(!Number.isFinite(phoneHeading)){
+        $('#sunShadowCompassStatus').textContent = 'Phone compass not supported on this browser';
+        setSunShadowOrientationMode('north');
+      }
+    },1800);
+    return true;
+  }catch(error){
+    console.warn('Phone compass permission failed', error);
+    $('#sunShadowCompassStatus').textContent = 'Phone compass permission denied';
+    setSunShadowOrientationMode('north');
+    return false;
+  }
+}
+
+function handleDeviceOrientation(event){
+  const heading = getPhoneHeading(event);
+  if(!Number.isFinite(heading)) return;
+  clearTimeout(phoneCompassTimer);
+  phoneHeading = heading;
+  $('#sunShadowPhoneHeading').textContent = `${Math.round(phoneHeading)}°`;
+  if(sunShadowOrientationMode === 'phone'){
+    $('#sunShadowCompassStatus').textContent = 'Phone compass active';
+    updateCompassOverlay();
+    renderCurrentSunShadow();
+  }
+}
+
+function getPhoneHeading(event){
+  if(Number.isFinite(event.webkitCompassHeading)){
+    return (Number(event.webkitCompassHeading) + 360) % 360;
+  }
+  if(!Number.isFinite(event.alpha)) return null;
+  const screenAngle = Number(screen.orientation?.angle ?? window.orientation ?? 0);
+  return (360 - Number(event.alpha) + screenAngle + 360) % 360;
+}
+
+function setSunShadowOrientationMode(mode){
+  if(mode === 'phone' && !Number.isFinite(phoneHeading)){
+    sunShadowOrientationMode = 'phone';
+    updateSunShadowOrientationButtons();
+    updateCompassOverlay();
+    renderCurrentSunShadow();
+    return;
+  }
+  sunShadowOrientationMode = mode === 'phone' ? 'phone' : 'north';
+  updateSunShadowOrientationButtons();
+  updateCompassOverlay();
+  renderCurrentSunShadow();
+}
+
+function updateSunShadowOrientationButtons(){
+  const northUp = sunShadowOrientationMode === 'north';
+  const northButton = $('#sunShadowNorthUp');
+  const phoneButton = $('#sunShadowPhoneMode');
+  northButton.classList.toggle('is-active', northUp);
+  phoneButton.classList.toggle('is-active', !northUp);
+  northButton.setAttribute('aria-pressed', String(northUp));
+  phoneButton.setAttribute('aria-pressed', String(!northUp));
+}
+
+function worldAzimuthToDisplayAzimuth(worldAzimuth){
+  const heading = sunShadowOrientationMode === 'phone' && Number.isFinite(phoneHeading)
+    ? phoneHeading
+    : 0;
+  return (Number(worldAzimuth) - heading + 360) % 360;
+}
+
+function updateCompassOverlay(){
+  const cardinals = [
+    ['.compass-n',0],
+    ['.compass-e',90],
+    ['.compass-s',180],
+    ['.compass-w',270]
+  ];
+  for(const [selector,worldAzimuth] of cardinals){
+    const element = $(selector);
+    if(!element) continue;
+    const angle = worldAzimuthToDisplayAzimuth(worldAzimuth) * Math.PI / 180;
+    element.style.left = `${50 + Math.sin(angle) * 44}%`;
+    element.style.top = `${50 - Math.cos(angle) * 42}%`;
+  }
+}
+
+async function loadSunShadowMapContext(loc){
+  if(!isFinite(loc?.lat) || !isFinite(loc?.lon)) return;
+  const fetchId = ++sunShadowFetchSequence;
+  const status = $('#sunShadowStatus');
+  status.textContent = 'Loading nearby building outlines and terrain height…';
+
+  const [buildingsResult, elevationResult] = await Promise.allSettled([
+    fetchNearbyOsmBuildings(loc.lat, loc.lon),
+    getElevation(loc.lat, loc.lon)
+  ]);
+  if(fetchId !== sunShadowFetchSequence) return;
+
+  sunShadowBuildings = buildingsResult.status === 'fulfilled' ? buildingsResult.value : [];
+  sunShadowElevation = elevationResult.status === 'fulfilled' ? elevationResult.value : null;
+
+  const messages = [];
+  if(sunShadowBuildings.length){
+    messages.push(`${sunShadowBuildings.length} nearby building outlines`);
+  }else{
+    messages.push('Building outlines unavailable. Showing the simple object');
+  }
+  if(sunShadowElevation != null){
+    messages.push(`terrain elevation approx. ${Math.round(sunShadowElevation)} m`);
+  }else{
+    messages.push('Terrain height unavailable. Using flat ground');
+  }
+  status.textContent = messages.join(' · ');
+  renderCurrentSunShadow();
+}
+
+async function fetchNearbyOsmBuildings(lat, lon){
+  const radius = 150;
+  const query = `[out:json][timeout:12];way["building"](around:${radius},${lat},${lon});out tags geom;`;
+  const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
+  const response = await fetch(url, {headers:{Accept:'application/json'}});
+  if(!response.ok) throw new Error('OSM building fetch failed');
+  const data = await response.json();
+  const metresPerLonDegree = 111320 * Math.cos(lat * Math.PI / 180);
+  const metresPerLatDegree = 110540;
+
+  return (data.elements || [])
+    .filter(element => Array.isArray(element.geometry) && element.geometry.length >= 4)
+    .map(element => {
+      const points = element.geometry.map(point => ({
+        x:(point.lon - lon) * metresPerLonDegree,
+        z:(point.lat - lat) * metresPerLatDegree
+      }));
+      const xs = points.map(point => point.x);
+      const zs = points.map(point => point.z);
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const minZ = Math.min(...zs);
+      const maxZ = Math.max(...zs);
+      const taggedHeight = parseFloat(String(element.tags?.height || '').replace(/[^\d.]/g,''));
+      const levels = parseFloat(element.tags?.['building:levels']);
+      const height = isFinite(taggedHeight) && taggedHeight > 0
+        ? taggedHeight
+        : (isFinite(levels) && levels > 0 ? levels * 3 : 8);
+      return {
+        x:(minX + maxX) / 2,
+        z:(minZ + maxZ) / 2,
+        width:Math.max(maxX - minX, 2),
+        depth:Math.max(maxZ - minZ, 2),
+        height:clamp(height, 3, 35),
+        distance:Math.hypot((minX + maxX) / 2, (minZ + maxZ) / 2)
+      };
+    })
+    .filter(building => building.distance <= radius)
+    .sort((a,b) => a.distance - b.distance)
+    .slice(0, 36);
+}
+
+async function getElevation(lat, lon){
+  try{
+    const srtmUrl = `https://api.opentopodata.org/v1/srtm90m?locations=${lat},${lon}`;
+    const response = await fetch(srtmUrl);
+    if(!response.ok) throw new Error('SRTM elevation fetch failed');
+    const data = await response.json();
+    const elevation = Number(data?.results?.[0]?.elevation);
+    if(isFinite(elevation)) return elevation;
+  }catch(error){
+    console.info('SRTM elevation unavailable; trying fallback.', error);
+  }
+
+  const fallbackUrl = `https://api.open-meteo.com/v1/elevation?latitude=${lat}&longitude=${lon}`;
+  const fallbackResponse = await fetch(fallbackUrl);
+  if(!fallbackResponse.ok) throw new Error('Elevation fallback failed');
+  const fallbackData = await fallbackResponse.json();
+  const fallbackElevation = Number(fallbackData?.elevation?.[0]);
+  if(!isFinite(fallbackElevation)) throw new Error('Elevation unavailable');
+  return fallbackElevation;
+}
+
+function degToCompass16(deg){
+  return degToCompass(deg);
+}
+
+function initSunShadowWebGl(){
+  const canvas = $('#sunShadowCanvas');
+  sunShadowGl = canvas.getContext('webgl', {
+    alpha:false,
+    antialias:true,
+    depth:true,
+    preserveDrawingBuffer:false
+  });
+  if(!sunShadowGl){
+    $('#sunShadowStatus').textContent = '3D preview unavailable in this browser.';
+    return;
+  }
+
+  const vertexSource = `
+    attribute vec3 aPosition;
+    attribute vec4 aColor;
+    uniform mat4 uMatrix;
+    varying vec4 vColor;
+    void main(){
+      gl_Position = uMatrix * vec4(aPosition, 1.0);
+      vColor = aColor;
+    }
+  `;
+  const fragmentSource = `
+    precision mediump float;
+    varying vec4 vColor;
+    void main(){
+      gl_FragColor = vColor;
+    }
+  `;
+  sunShadowProgram = createWebGlProgram(sunShadowGl, vertexSource, fragmentSource);
+  if(!sunShadowProgram){
+    $('#sunShadowStatus').textContent = '3D preview could not be initialized.';
+  }
+}
+
+function renderSunShadowScene(result){
+  const gl = sunShadowGl;
+  const canvas = $('#sunShadowCanvas');
+  if(!gl || !sunShadowProgram) return;
+
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const width = Math.max(canvas.clientWidth, 280);
+  const height = Math.max(canvas.clientHeight, 240);
+  const pixelWidth = Math.round(width * dpr);
+  const pixelHeight = Math.round(height * dpr);
+  if(canvas.width !== pixelWidth || canvas.height !== pixelHeight){
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+  }
+
+  const groundTriangles = [];
+  const groundColors = [];
+  const shadowTriangles = [];
+  const shadowColors = [];
+  const buildingTriangles = [];
+  const buildingColors = [];
+  const gridLines = [];
+  const gridColors = [];
+  const extent = 120;
+
+  addQuad(
+    groundTriangles, groundColors,
+    [-extent,-0.03,-extent], [extent,-0.03,-extent],
+    [extent,-0.03,extent], [-extent,-0.03,extent],
+    [0.96,0.96,0.96,1]
+  );
+
+  const gridStep = 30;
+  for(let value=-extent; value<=extent; value+=gridStep){
+    addLine(gridLines,gridColors,[-extent,0,value],[extent,0,value],[0.84,0.84,0.84,1]);
+    addLine(gridLines,gridColors,[value,0,-extent],[value,0,extent],[0.84,0.84,0.84,1]);
+  }
+  addLine(gridLines,gridColors,[0,0,0],[0,0,extent],[0.48,0.48,0.48,1]);
+  addLine(gridLines,gridColors,[0,0,0],[extent,0,0],[0.62,0.62,0.62,1]);
+
+  const buildingShadowLengthFactor = result.hasDirectShadow
+    ? 1 / Math.tan(Math.max(result.sunAltitude * Math.PI / 180,0.001))
+    : 0;
+  const displayShadowAzimuth = worldAzimuthToDisplayAzimuth(result.shadowAzimuth);
+  const sceneRotation = sunShadowOrientationMode === 'phone' && Number.isFinite(phoneHeading)
+    ? -phoneHeading
+    : 0;
+  for(const building of result.buildings || []){
+    const rotated = rotateGroundPoint(
+      building.x,
+      building.z,
+      sceneRotation
+    );
+    const displayBuilding = {...building,x:rotated.x,z:rotated.z,rotation:sceneRotation};
+    if(result.hasDirectShadow){
+      const buildingShadowLength = Math.min(building.height * buildingShadowLengthFactor,80);
+      const polygon = addBuildingShadow(displayBuilding,displayShadowAzimuth,buildingShadowLength);
+      addFlatPolygon(shadowTriangles,shadowColors,polygon,0.04,[0.05,0.05,0.05,0.34]);
+    }
+    addBox(
+      buildingTriangles, buildingColors,
+      displayBuilding.x, building.height / 2, displayBuilding.z,
+      building.width, building.height, building.depth,
+      [0.72,0.72,0.72,0.64],
+      sceneRotation
+    );
+  }
+
+  const projection = mat4Perspective(43 * Math.PI / 180, pixelWidth / pixelHeight, 0.1, 900);
+  const distance = getSunShadowCameraDistance();
+  const yawRad = sunShadowCamera.yaw * Math.PI / 180;
+  const pitchRad = sunShadowCamera.pitch * Math.PI / 180;
+  const eye = [
+    Math.sin(yawRad) * Math.cos(pitchRad) * distance,
+    Math.sin(pitchRad) * distance,
+    Math.cos(yawRad) * Math.cos(pitchRad) * distance
+  ];
+  const target = [0,8,0];
+  const view = mat4LookAt(eye,target,[0,1,0]);
+  const matrix = mat4Multiply(projection, view);
+
+  gl.viewport(0,0,pixelWidth,pixelHeight);
+  gl.clearColor(0.98,0.98,0.98,1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  gl.disable(gl.CULL_FACE);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+  gl.useProgram(sunShadowProgram);
+  gl.uniformMatrix4fv(gl.getUniformLocation(sunShadowProgram,'uMatrix'),false,new Float32Array(matrix));
+  drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,groundTriangles,groundColors);
+  drawWebGlGeometry(gl,sunShadowProgram,gl.LINES,gridLines,gridColors);
+  gl.depthMask(false);
+  drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,shadowTriangles,shadowColors);
+  gl.depthMask(true);
+  drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,buildingTriangles,buildingColors);
+}
+
+function createWebGlProgram(gl, vertexSource, fragmentSource){
+  const compile = (type, source) => {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if(!gl.getShaderParameter(shader, gl.COMPILE_STATUS)){
+      console.error(gl.getShaderInfoLog(shader));
+      gl.deleteShader(shader);
+      return null;
+    }
+    return shader;
+  };
+  const vertex = compile(gl.VERTEX_SHADER, vertexSource);
+  const fragment = compile(gl.FRAGMENT_SHADER, fragmentSource);
+  if(!vertex || !fragment) return null;
+  const program = gl.createProgram();
+  gl.attachShader(program, vertex);
+  gl.attachShader(program, fragment);
+  gl.linkProgram(program);
+  if(!gl.getProgramParameter(program, gl.LINK_STATUS)){
+    console.error(gl.getProgramInfoLog(program));
+    return null;
+  }
+  return program;
+}
+
+function drawWebGlGeometry(gl, program, mode, positions, colors){
+  if(!positions.length) return;
+  const positionBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STREAM_DRAW);
+  const positionLocation = gl.getAttribLocation(program,'aPosition');
+  gl.enableVertexAttribArray(positionLocation);
+  gl.vertexAttribPointer(positionLocation,3,gl.FLOAT,false,0,0);
+
+  const colorBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STREAM_DRAW);
+  const colorLocation = gl.getAttribLocation(program,'aColor');
+  gl.enableVertexAttribArray(colorLocation);
+  gl.vertexAttribPointer(colorLocation,4,gl.FLOAT,false,0,0);
+  gl.drawArrays(mode,0,positions.length / 3);
+  gl.deleteBuffer(positionBuffer);
+  gl.deleteBuffer(colorBuffer);
+}
+
+function addLine(positions, colors, start, end, color){
+  positions.push(...start,...end);
+  const rgba = normalizeColor(color);
+  colors.push(...rgba,...rgba);
+}
+
+function addBuildingShadow(building, shadowAzimuth, shadowLength){
+  const angle = (building.rotation || 0) * Math.PI / 180;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const corners = [
+    [-building.width/2,-building.depth/2],
+    [building.width/2,-building.depth/2],
+    [building.width/2,building.depth/2],
+    [-building.width/2,building.depth/2]
+  ].map(([x,z]) => ({
+    x:building.x + x*cos + z*sin,
+    z:building.z - x*sin + z*cos
+  }));
+  const shadowRadians = shadowAzimuth * Math.PI / 180;
+  const offsetX = Math.sin(shadowRadians) * shadowLength;
+  const offsetZ = Math.cos(shadowRadians) * shadowLength;
+  return convexHull([
+    ...corners,
+    ...corners.map(point => ({x:point.x+offsetX,z:point.z+offsetZ}))
+  ]);
+}
+
+function convexHull(points){
+  if(points.length <= 3) return points;
+  const sorted = [...points].sort((a,b) => a.x === b.x ? a.z - b.z : a.x - b.x);
+  const cross = (o,a,b) => (a.x-o.x)*(b.z-o.z) - (a.z-o.z)*(b.x-o.x);
+  const lower = [];
+  for(const point of sorted){
+    while(lower.length >= 2 && cross(lower[lower.length-2],lower[lower.length-1],point) <= 0) lower.pop();
+    lower.push(point);
+  }
+  const upper = [];
+  for(let i=sorted.length-1;i>=0;i--){
+    const point = sorted[i];
+    while(upper.length >= 2 && cross(upper[upper.length-2],upper[upper.length-1],point) <= 0) upper.pop();
+    upper.push(point);
+  }
+  lower.pop();
+  upper.pop();
+  return lower.concat(upper);
+}
+
+function addFlatPolygon(positions,colors,points,y,color){
+  if(!points || points.length < 3) return;
+  const rgba = normalizeColor(color);
+  for(let i=1;i<points.length-1;i++){
+    positions.push(
+      points[0].x,y,points[0].z,
+      points[i].x,y,points[i].z,
+      points[i+1].x,y,points[i+1].z
+    );
+    colors.push(...rgba,...rgba,...rgba);
+  }
+}
+
+function rotateGroundPoint(x,z,degrees){
+  const radians = degrees * Math.PI / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  return {x:x*cos+z*sin,z:-x*sin+z*cos};
+}
+
+function addQuad(positions, colors, a,b,c,d,color){
+  positions.push(...a,...b,...c,...a,...c,...d);
+  const rgba = normalizeColor(color);
+  for(let i=0;i<6;i++) colors.push(...rgba);
+}
+
+function normalizeColor(color){
+  return color.length === 4 ? color : [color[0],color[1],color[2],1];
+}
+
+function addBox(positions, colors, x,y,z,width,height,depth,color,rotation=0){
+  const y0=y-height/2, y1=y+height/2;
+  const angle=rotation*Math.PI/180, cos=Math.cos(angle), sin=Math.sin(angle);
+  const point=(localX,localZ,heightY)=>[
+    x+localX*cos+localZ*sin,
+    heightY,
+    z-localX*sin+localZ*cos
+  ];
+  const a0=point(-width/2,-depth/2,y0);
+  const b0=point(width/2,-depth/2,y0);
+  const c0=point(width/2,depth/2,y0);
+  const d0=point(-width/2,depth/2,y0);
+  const a1=point(-width/2,-depth/2,y1);
+  const b1=point(width/2,-depth/2,y1);
+  const c1=point(width/2,depth/2,y1);
+  const d1=point(-width/2,depth/2,y1);
+  addQuad(positions,colors,d0,c0,c1,d1,color);
+  addQuad(positions,colors,b0,a0,a1,b1,color);
+  addQuad(positions,colors,a0,d0,d1,a1,color);
+  addQuad(positions,colors,c0,b0,b1,c1,color);
+  addQuad(positions,colors,d1,c1,b1,a1,color);
+}
+
+function mat4Perspective(fov, aspect, near, far){
+  const f = 1 / Math.tan(fov / 2);
+  const nf = 1 / (near - far);
+  return [
+    f/aspect,0,0,0,
+    0,f,0,0,
+    0,0,(far+near)*nf,-1,
+    0,0,2*far*near*nf,0
+  ];
+}
+
+function mat4LookAt(eye, target, up){
+  let zx=eye[0]-target[0], zy=eye[1]-target[1], zz=eye[2]-target[2];
+  let length=Math.hypot(zx,zy,zz) || 1;
+  zx/=length; zy/=length; zz/=length;
+  let xx=up[1]*zz-up[2]*zy, xy=up[2]*zx-up[0]*zz, xz=up[0]*zy-up[1]*zx;
+  length=Math.hypot(xx,xy,xz) || 1;
+  xx/=length; xy/=length; xz/=length;
+  const yx=zy*xz-zz*xy, yy=zz*xx-zx*xz, yz=zx*xy-zy*xx;
+  return [
+    xx,yx,zx,0,
+    xy,yy,zy,0,
+    xz,yz,zz,0,
+    -(xx*eye[0]+xy*eye[1]+xz*eye[2]),
+    -(yx*eye[0]+yy*eye[1]+yz*eye[2]),
+    -(zx*eye[0]+zy*eye[1]+zz*eye[2]),
+    1
+  ];
+}
+
+function mat4Multiply(a,b){
+  const out = new Array(16).fill(0);
+  for(let column=0;column<4;column++){
+    for(let row=0;row<4;row++){
+      for(let i=0;i<4;i++){
+        out[column*4+row] += a[i*4+row] * b[column*4+i];
+      }
+    }
+  }
+  return out;
+}
+
+function dateStringInTimeZone(date, timeZone){
+  try{
+    const parts = new Intl.DateTimeFormat('en-CA',{
+      timeZone,
+      year:'numeric',
+      month:'2-digit',
+      day:'2-digit'
+    }).formatToParts(date);
+    const values = Object.fromEntries(parts.map(part => [part.type,part.value]));
+    return `${values.year}-${values.month}-${values.day}`;
+  }catch{
+    return date.toISOString().slice(0,10);
+  }
+}
+
+function minutesInTimeZone(date, timeZone){
+  if(!(date instanceof Date) || isNaN(date)) return NaN;
+  try{
+    const parts = new Intl.DateTimeFormat('en-US',{
+      timeZone,
+      hour:'2-digit',
+      minute:'2-digit',
+      hourCycle:'h23'
+    }).formatToParts(date);
+    const values = Object.fromEntries(parts.map(part => [part.type,part.value]));
+    return Number(values.hour) * 60 + Number(values.minute);
+  }catch{
+    return date.getHours() * 60 + date.getMinutes();
+  }
+}
+
+function zonedDateTimeToDate(dateString, minutes, timeZone){
+  const [year,month,day] = dateString.split('-').map(Number);
+  const hour = Math.floor(minutes / 60);
+  const minute = minutes % 60;
+  const utcGuess = Date.UTC(year,month-1,day,hour,minute);
+  let result = new Date(utcGuess);
+  for(let i=0;i<2;i++){
+    const parts = new Intl.DateTimeFormat('en-US',{
+      timeZone,
+      year:'numeric',
+      month:'2-digit',
+      day:'2-digit',
+      hour:'2-digit',
+      minute:'2-digit',
+      hourCycle:'h23'
+    }).formatToParts(result);
+    const values = Object.fromEntries(parts.map(part => [part.type,part.value]));
+    const represented = Date.UTC(
+      Number(values.year),
+      Number(values.month)-1,
+      Number(values.day),
+      Number(values.hour),
+      Number(values.minute)
+    );
+    result = new Date(result.getTime() + utcGuess - represented);
+  }
+  return result;
+}
+
+function formatMinutes(minutes){
+  const hour24 = Math.floor(minutes / 60) % 24;
+  const minute = minutes % 60;
+  const suffix = hour24 >= 12 ? 'pm' : 'am';
+  const hour12 = hour24 % 12 || 12;
+  return `${hour12}:${String(minute).padStart(2,'0')} ${suffix}`;
+}
+
+function formatTime(date, timeZone){
+  try{
+    return new Intl.DateTimeFormat(undefined,{
+      timeZone,
+      hour:'numeric',
+      minute:'2-digit',
+      hour12:true
+    }).format(date);
+  }catch{
+    return date.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit',hour12:true});
+  }
+}
+
+/* Map + Radar */
+
+async function initMap(){
+  rvMap = L.map('radarMap', {
+    zoomControl:true,
+    attributionControl:true,
+    maxZoom:19,
+    zoomSnap:0.5,
+    wheelPxPerZoomLevel:80
+  })
+           .setView([lastCenter.lat, lastCenter.lon], 10);
+
+  baseLayer = L.tileLayer(
+    'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png',
+    {
+      maxZoom:19,
+      maxNativeZoom:18,
+      subdomains:'abcd',
+      attribution:'&copy; OpenStreetMap & Carto'
+    }
+  ).addTo(rvMap);
+
+  rvMap.createPane('placeLabels');
+  rvMap.getPane('placeLabels').style.zIndex = 450;
+  rvMap.getPane('placeLabels').style.pointerEvents = 'none';
+  labelLayer = L.tileLayer(
+    'https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png',
+    { pane:'placeLabels', maxZoom:19, maxNativeZoom:18, subdomains:'abcd' }
+  ).addTo(rvMap);
+
+  rvMap.on('click', event => selectMapLocation(event.latlng));
+  $('#rvPlay').addEventListener('click', ()=> togglePlay());
+  $('#rvPrev').addEventListener('click', ()=> step(-1));
+  $('#rvNext').addEventListener('click', ()=> step(1));
+}
+
+function selectMapLocation(latlng){
+  const lat = Number(latlng.lat);
+  const lon = Number(latlng.lng);
+  const loc = {
+    name:`Map selection ${formatCoordinate(lat, 'lat')}, ${formatCoordinate(lon, 'lon')}`,
+    lat,
+    lon,
+    tz:'auto'
+  };
+  qEl.value = loc.name;
+  updateLocationMarker(lat, lon);
+  loadFor(loc);
+}
+
+async function refreshFrames(){
+  setRadarState('loading');
+  try{
+    const res  = await fetch('https://api.rainviewer.com/public/weather-maps.json', {cache:'no-store'});
+    if(!res.ok) throw new Error(`RainViewer returned ${res.status}`);
+    const meta = await res.json();
+    rvHost = meta.host || rvHost;
+    const rp = meta.radar?.past ?? [];
+    const rn = meta.radar?.nowcast ?? [];
+    rvFrames  = [...rp.slice(-6), ...rn.slice(0,5)].map(f=>({time:f.time, path:f.path}));
+    if(!rvFrames.length){
+      setRadarState('empty');
+      showFrame(0);
+      return;
+    }
+    rvIndex = Math.max(rvFrames.length - rn.length, 0);
+    setRadarState('ready');
+    showFrame(rvIndex);
+  }catch(e){
+    console.error('RainViewer error', e);
+    rvFrames = [];
+    setRadarState('error');
+  }
+}
+
+function layerUrl(frame){
+  return `${rvHost}${frame.path}/256/{z}/{x}/{y}/2/1_1.png`;
+}
+
+function showFrame(i){
+  const frames = rvFrames;
+  if(!frames.length){
+    if(overlay){
+      rvMap.removeLayer(overlay);
+      overlay = null;
+    }
+    return;
+  }
+  rvIndex = (i + frames.length) % frames.length;
+  const f = frames[rvIndex];
+  if(overlay) rvMap.removeLayer(overlay);
+  overlay = L.tileLayer(layerUrl(f), {
+    tileSize:256,
+    maxNativeZoom:7,
+    maxZoom:19,
+    opacity:0.5,
+    zIndex:400
+  });
+  radarTileErrors = 0;
+  overlay.on('tileerror', () => {
+    radarTileErrors += 1;
+    if(radarTileErrors >= 4) setRadarState('coverage');
+  });
+  overlay.on('load', () => {
+    if(radarTileErrors < 4) setRadarState('ready');
+  });
+  overlay.addTo(rvMap);
+  const ts = new Date(f.time*1000);
+  $('#rvLabel').textContent = `Radar time: ${
+    ts.toLocaleString(undefined,{
+      hour:'numeric',
+      minute:'2-digit',
+      hour12:true
+    })
+  } (local)`;
+}
+
+function setRadarState(state){
+  const message = $('#radarMessage');
+  const label = $('#rvLabel');
+  const controls = [$('#rvPrev'), $('#rvPlay'), $('#rvNext')];
+  const states = {
+    loading: ['Loading radar…', '', true],
+    ready: ['', '', false],
+    empty: ['Radar unavailable', 'No radar frames or coverage are currently available for this location.', true],
+    coverage: ['No radar coverage', 'Radar tiles are unavailable at this location or zoom level.', true],
+    error: ['Radar temporarily unavailable', 'The radar service could not be reached. Forecast data is still available.', true]
+  };
+  const [title, detail, disabled] = states[state] || states.error;
+  if(disabled && rvTimer){
+    clearInterval(rvTimer);
+    rvTimer = null;
+    $('#rvPlay').textContent = 'Play';
+  }
+  controls.forEach(control => { if(control) control.disabled = disabled; });
+  if(state === 'ready'){
+    message.classList.remove('is-visible');
+    message.innerHTML = '';
+    return;
+  }
+  label.textContent = title;
+  message.innerHTML = `<div><strong>${title}</strong>${detail ? `<span>${detail}</span>` : ''}</div>`;
+  message.classList.toggle('is-visible', state !== 'loading');
+}
+
+function step(d){ showFrame(rvIndex + d); }
+
+function togglePlay(){
+  if(rvTimer){
+    clearInterval(rvTimer);
+    rvTimer=null;
+    $('#rvPlay').textContent='Play';
+    return;
+  }
+  $('#rvPlay').textContent='Pause';
+  rvTimer = setInterval(()=> step(1), 650);
+}
+
+function moveCenter(lat, lon){
+  lastCenter = {lat,lon};
+  if(rvMap) rvMap.setView([lat,lon], rvMap.getZoom());
+}
+
+function updateLocationMarker(lat, lon){
+  if(!rvMap) return;
+  if(locMarker) rvMap.removeLayer(locMarker);
+  locMarker = L.circleMarker([lat,lon], {
+    radius:7,
+    color:'#111111',
+    weight:2,
+    fillColor:'#111111',
+    fillOpacity:0.25
+  }).addTo(rvMap);
+}
+
+/* Moon phase helpers */
+
+function findNextMoonPhase(targetPhase){
+  const now = new Date();
+  let bestDate = null;
+  let bestDiff = Infinity;
+
+  for(let d=0; d<60; d++){
+    for(let h=0; h<24; h+=3){
+      const t = new Date(now.getFullYear(), now.getMonth(), now.getDate()+d, h);
+      if(t <= now) continue;
+      const mi = SunCalc.getMoonIllumination(t);
+      const diff = Math.abs(mi.phase - targetPhase);
+      if(diff < bestDiff){
+        bestDiff = diff;
+        bestDate = t;
+      }
+    }
+  }
+  return bestDate;
+}
+
+function findMoonPhases(targetPhase, monthsAhead=3){
+  const now = new Date();
+  const end = new Date(now.getTime());
+  end.setMonth(end.getMonth() + monthsAhead);
+
+  const results = [];
+  let lastTime = null;
+
+  for(let t = new Date(now); t < end; t = new Date(t.getTime() + 6*3600*1000)){
+    const mi = SunCalc.getMoonIllumination(t);
+    const diff = Math.abs(mi.phase - targetPhase);
+    if(diff < 0.02){
+      if(!lastTime || (t - lastTime) > 0.9*24*3600*1000){
+        results.push(new Date(t));
+        lastTime = t;
+      }
+    }
+  }
+  return results;
+}
+
+/* Utils */
+
+function clamp(x,a,b){ return Math.min(Math.max(x,a),b); }
+function round1(x){ return Math.round(x*10)/10; }
+function refresh(){ onSearch(); }
+function formatTemp(value){ return value != null && isFinite(value) ? `${Math.round(value)}°` : '—'; }
+function formatMm(value){ return value != null && isFinite(value) ? `${round1(value)} mm` : '—'; }
+function spokenNumber(value){ return value != null && isFinite(value) ? round1(value) : 'unknown'; }
+function formatCoordinate(value, axis){
+  const direction = axis === 'lat'
+    ? (value >= 0 ? 'N' : 'S')
+    : (value >= 0 ? 'E' : 'W');
+  return `${Math.abs(value).toFixed(3)}°${direction}`;
+}
+
+function distanceKm(aLat, aLon, bLat, bLon){
+  const toRad = value => value * Math.PI / 180;
+  const earthRadiusKm = 6371;
+  const dLat = toRad(bLat - aLat);
+  const dLon = toRad(bLon - aLon);
+  const lat1 = toRad(aLat);
+  const lat2 = toRad(bLat);
+  const h = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return earthRadiusKm * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+function findNearbyBomStation(loc){
+  return BOM_STATIONS
+    .map(station => ({...station, distanceKm:distanceKm(loc.lat, loc.lon, station.lat, station.lon)}))
+    .filter(station => station.distanceKm <= station.maxDistanceKm)
+    .sort((a,b) => a.distanceKm - b.distanceKm)[0] || null;
+}
+
+function degToCompass(deg){
+  if(deg==null || isNaN(deg)) return '—';
+  const dirs=['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+  const normalized = ((Number(deg) % 360) + 360) % 360;
+  const idx=Math.round(normalized/22.5)%16;
+  return dirs[idx];
+}
+
+function arrowFromDeg(deg){
+  if(deg==null || isNaN(deg)) return '';
+  const d = ((deg % 360) + 360) % 360;
+  const idx = Math.round(d / 45) % 8;
+  const arrows = ['↑','↗','→','↘','↓','↙','←','↖'];
+  return arrows[idx];
+}
+
+function displayWindDeg(raw){
+  const r = Number(raw);
+  if(!isFinite(r)) return null;
+  return (r + 180) % 360;
+}
+
+function sunAzimuthDeg(lat,lon,date){
+  const pos = SunCalc.getPosition(date, lat, lon);
+  const degFromNorth = (pos.azimuth*180/Math.PI + 180) % 360;
+  return degFromNorth;
+}
+
+/* AQ 等級 */
+
+function aqCategory(aqi){
+  if(aqi <= 50)  return 'Good';
+  if(aqi <= 100) return 'Moderate';
+  if(aqi <= 150) return 'USG';
+  if(aqi <= 200) return 'Unhealthy';
+  if(aqi <= 300) return 'Very unhealthy';
+  return 'Hazardous';
+}
+
+/* 時間格式：全頁 am/pm，12am 位置加星期 */
+
+function fmtTime(dt, tz){
+  try{
+    return new Intl.DateTimeFormat(undefined,{
+      hour:'numeric',timeZone:tz,hour12:true
+    }).format(new Date(dt));
+  }catch{
+    return new Date(dt).toLocaleTimeString(undefined,{
+      hour:'numeric',hour12:true
+    });
+  }
+}
+
+function timeLabelWithDow(isoStr){
+  const d = new Date(isoStr);
+  const h = d.getHours();
+  const suffix = h>=12 ? 'pm' : 'am';
+  let hh = h%12;
+  if(hh===0) hh = 12;
+  if(h===0){
+    const dow = d.toLocaleDateString(undefined,{ weekday:'short' });
+    return `${dow} ${hh}${suffix}`;
+  }
+  return `${hh}${suffix}`;
+}
+
+/* 定期更新 radar frames */
+
+setInterval(async()=>{
+  try{ await refreshFrames(); }catch(e){}
+}, 300000);
+</script>
+</body>
+</html>
