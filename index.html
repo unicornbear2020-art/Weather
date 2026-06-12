@@ -325,9 +325,9 @@
       height:28px;
       display:none;
       pointer-events:none;
-      background:#111111;
-      opacity:.88;
-      clip-path:polygon(50% 0%,0% 100%,50% 72%,100% 100%);
+      background:#8acfff;
+      opacity:.92;
+      clip-path:polygon(50% 100%,0% 0%,100% 0%);
       transform:translate(-50%,-50%);
       transform-origin:50% 58%;
       filter:drop-shadow(0 1px 2px rgba(255,255,255,.8));
@@ -699,7 +699,12 @@ let sunShadowMode = 'map';
 let sunShadowBuildings = [];
 let sunShadowElevation = null;
 let sunShadowLocationKey = '';
+let sunShadowContextOrigin = null;
 let sunShadowFetchSequence = 0;
+let liveLocationWatchId = null;
+let liveLocationLast = null;
+const LIVE_LOCATION_MIN_MOVE_M = 3;
+const SUN_SHADOW_CONTEXT_REFRESH_M = 60;
 let sunShadowGl = null;
 let sunShadowProgram = null;
 let sunShadowOrientationMode = 'north';
@@ -760,29 +765,76 @@ async function init() {
 
 function useCurrentLocation(){
   if (!navigator.geolocation){
+    stopLiveLocationTracking();
     loadFor(DEFAULT_LOC);
     return;
   }
   setStatus('Locating…');
   navigator.geolocation.getCurrentPosition(
     pos => {
-      const loc = {
-        name: 'Your location',
-        lat: pos.coords.latitude,
-        lon: pos.coords.longitude,
-        tz: 'auto'
-      };
+      const loc = locationFromPosition(pos, 'Your live location');
       qEl.value = loc.name;
+      liveLocationLast = loc;
       loadFor(loc);
+      startLiveLocationTracking();
     },
     () => {
+      stopLiveLocationTracking();
       loadFor(DEFAULT_LOC);
     },
     { enableHighAccuracy:true, timeout:10000, maximumAge:600000 }
   );
 }
 
+function startLiveLocationTracking(){
+  if(!navigator.geolocation || liveLocationWatchId !== null) return;
+  liveLocationWatchId = navigator.geolocation.watchPosition(
+    position => updateLiveLocation(position),
+    error => {
+      console.info('Live location update failed', error);
+      const compassStatus = $('#sunShadowCompassStatus');
+      if(compassStatus && qEl.value.includes('live')){
+        compassStatus.textContent = 'Live location paused or unavailable';
+      }
+    },
+    { enableHighAccuracy:true, maximumAge:2000, timeout:15000 }
+  );
+}
+
+function stopLiveLocationTracking(){
+  if(liveLocationWatchId === null || !navigator.geolocation) return;
+  navigator.geolocation.clearWatch(liveLocationWatchId);
+  liveLocationWatchId = null;
+  liveLocationLast = null;
+}
+
+function locationFromPosition(position, name='Your live location'){
+  return {
+    name,
+    lat:Number(position.coords.latitude),
+    lon:Number(position.coords.longitude),
+    tz:'auto',
+    timezone:selectedLocation?.timezone || DEFAULT_LOC.tz,
+    accuracy:Number(position.coords.accuracy)
+  };
+}
+
+function updateLiveLocation(position){
+  const loc = locationFromPosition(position);
+  const moved = liveLocationLast
+    ? distanceMeters(liveLocationLast, loc)
+    : Infinity;
+  if(moved < LIVE_LOCATION_MIN_MOVE_M) return;
+
+  liveLocationLast = loc;
+  qEl.value = loc.name;
+  moveCenter(loc.lat, loc.lon);
+  updateLocationMarker(loc.lat, loc.lon);
+  updateSunShadowSimulator(loc, { keepTime:true, live:true });
+}
+
 async function onSearch() {
+  stopLiveLocationTracking();
   const q = qEl.value.trim();
   if (!q) return;
   setStatus('Searching…');
@@ -1610,25 +1662,39 @@ function scheduleSunShadowRender(){
   });
 }
 
-function updateSunShadowSimulator(loc){
-  const newKey = `${Number(loc.lat).toFixed(5)},${Number(loc.lon).toFixed(5)}`;
+function updateSunShadowSimulator(loc, options={}){
+  const normalizedLocation = {
+    ...loc,
+    lat:Number(loc.lat),
+    lon:Number(loc.lon),
+    timezone:loc.timezone || loc.tz || selectedLocation?.timezone || DEFAULT_LOC.tz
+  };
+  if(!isFinite(normalizedLocation.lat) || !isFinite(normalizedLocation.lon)) return;
+
+  const newKey = `${normalizedLocation.lat.toFixed(5)},${normalizedLocation.lon.toFixed(5)}`;
   const locationChanged = newKey !== sunShadowLocationKey;
-  selectedLocation = {...loc};
+  selectedLocation = normalizedLocation;
   sunShadowLocationKey = newKey;
 
-  if(locationChanged){
-    sunShadowBuildings = [];
-    sunShadowElevation = null;
-    $('#sunShadowStatus').textContent = '';
+  const contextMove = sunShadowContextOrigin
+    ? distanceMeters(sunShadowContextOrigin, normalizedLocation)
+    : Infinity;
+  const shouldRefreshContext = !sunShadowContextOrigin || contextMove >= SUN_SHADOW_CONTEXT_REFRESH_M;
+
+  if(shouldRefreshContext){
+    if(!sunShadowContextOrigin){
+      sunShadowBuildings = [];
+      sunShadowElevation = null;
+    }
     loadSunShadowMapContext(selectedLocation);
   }
 
   const dateInput = $('#sunShadowDate');
   if(!dateInput.value){
-    dateInput.value = dateStringInTimeZone(new Date(), loc.timezone);
+    dateInput.value = dateStringInTimeZone(new Date(), normalizedLocation.timezone);
   }
-  $('#sunShadowLocation').textContent = loc.name;
-  configureSunShadowDay(locationChanged);
+  $('#sunShadowLocation').textContent = normalizedLocation.name || 'Your live location';
+  configureSunShadowDay(locationChanged && !options.keepTime);
 
 }
 
@@ -1675,7 +1741,7 @@ function renderCurrentSunShadow(){
   const result = calculateSunShadow(selectedDate, selectedLocation.lat, selectedLocation.lon);
   result.location = selectedLocation;
   result.timezone = tz;
-  result.buildings = sunShadowBuildings;
+  result.buildings = getSunShadowBuildingsForLocation(selectedLocation);
   result.elevation = sunShadowElevation;
   result.mode = sunShadowMode;
   result.orientationMode = sunShadowOrientationMode;
@@ -1826,12 +1892,7 @@ function worldAzimuthToDisplayAzimuth(worldAzimuth){
 
 function updatePhoneHeadingIndicator(){
   const pointer = $('#sunShadowPhonePointer');
-  if(!pointer) return;
-  const visible = sunShadowOrientationMode === 'phone' && Number.isFinite(phoneHeading);
-  pointer.style.display = visible ? 'block' : 'none';
-  if(visible){
-    pointer.style.transform = `translate(-50%,-50%) rotate(${phoneHeading}deg)`;
-  }
+  if(pointer) pointer.style.display = 'none';
 }
 
 function updateCompassOverlay(){
@@ -1850,6 +1911,51 @@ function updateCompassOverlay(){
   }
 }
 
+function getSunShadowBuildingsForLocation(loc){
+  if(!sunShadowContextOrigin || !Array.isArray(sunShadowBuildings) || !sunShadowBuildings.length){
+    return sunShadowBuildings;
+  }
+  const offset = localMetreOffset(sunShadowContextOrigin, loc);
+  return sunShadowBuildings.map(building => ({
+    ...building,
+    x:building.x - offset.x,
+    z:building.z - offset.z,
+    distance:Math.hypot(building.x - offset.x, building.z - offset.z)
+  }));
+}
+
+function localMetreOffset(fromLoc, toLoc){
+  const fromLat = Number(fromLoc?.lat);
+  const fromLon = Number(fromLoc?.lon);
+  const toLat = Number(toLoc?.lat);
+  const toLon = Number(toLoc?.lon);
+  if(!isFinite(fromLat) || !isFinite(fromLon) || !isFinite(toLat) || !isFinite(toLon)){
+    return {x:0,z:0};
+  }
+  const averageLat = (fromLat + toLat) / 2;
+  const metresPerLonDegree = 111320 * Math.cos(averageLat * Math.PI / 180);
+  const metresPerLatDegree = 110540;
+  return {
+    x:(toLon - fromLon) * metresPerLonDegree,
+    z:(toLat - fromLat) * metresPerLatDegree
+  };
+}
+
+function distanceMeters(a,b){
+  const aLat = Number(a?.lat);
+  const aLon = Number(a?.lon);
+  const bLat = Number(b?.lat);
+  const bLon = Number(b?.lon);
+  if(!isFinite(aLat) || !isFinite(aLon) || !isFinite(bLat) || !isFinite(bLon)) return Infinity;
+  const radians = Math.PI / 180;
+  const dLat = (bLat - aLat) * radians;
+  const dLon = (bLon - aLon) * radians;
+  const lat1 = aLat * radians;
+  const lat2 = bLat * radians;
+  const h = Math.sin(dLat/2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon/2) ** 2;
+  return 6371000 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1-h));
+}
+
 async function loadSunShadowMapContext(loc){
   if(!isFinite(loc?.lat) || !isFinite(loc?.lon)) return;
   const fetchId = ++sunShadowFetchSequence;
@@ -1862,6 +1968,10 @@ async function loadSunShadowMapContext(loc){
   ]);
   if(fetchId !== sunShadowFetchSequence) return;
 
+  sunShadowContextOrigin = {
+    lat:Number(loc.lat),
+    lon:Number(loc.lon)
+  };
   sunShadowBuildings = buildingsResult.status === 'fulfilled' ? buildingsResult.value : [];
   sunShadowElevation = elevationResult.status === 'fulfilled' ? elevationResult.value : null;
 
@@ -2006,6 +2116,8 @@ function renderSunShadowScene(result){
   const buildingColors = [];
   const gridLines = [];
   const gridColors = [];
+  const markerTriangles = [];
+  const markerColors = [];
   const extent = 120;
   const groundY = -0.10;
   const gridY = -0.055;
@@ -2018,13 +2130,7 @@ function renderSunShadowScene(result){
     [0.96,0.96,0.96,1]
   );
 
-  const gridStep = 30;
-  for(let value=-extent; value<=extent; value+=gridStep){
-    addLine(gridLines,gridColors,[-extent,gridY,value],[extent,gridY,value],[0.84,0.84,0.84,1]);
-    addLine(gridLines,gridColors,[value,gridY,-extent],[value,gridY,extent],[0.84,0.84,0.84,1]);
-  }
-  addLine(gridLines,gridColors,[0,gridY,0],[0,gridY,extent],[0.74,0.74,0.74,1]);
-  addLine(gridLines,gridColors,[0,gridY,0],[extent,gridY,0],[0.74,0.74,0.74,1]);
+  // Ground grid intentionally disabled: shadows are easier to read on a clean floor.
 
   const buildingShadowLengthFactor = result.hasDirectShadow
     ? 1 / Math.tan(Math.max(result.sunAltitude * Math.PI / 180,0.001))
@@ -2046,6 +2152,12 @@ function renderSunShadowScene(result){
       sceneRotation
     );
   }
+
+  const headingForMarker = Number.isFinite(result.phoneHeading) ? result.phoneHeading : 0;
+  // Draw the field-of-view marker first, then the location cylinder above it.
+  // This keeps the blue marker at the base without visually cutting through the cylinder.
+  addHeadingTriangle(markerTriangles,markerColors,0,0.03,0,headingForMarker,[0.72,0.88,1.00,1]);
+  addLocationCylinder(markerTriangles,markerColors,0,0.12,0,2.2,8,[0.26,0.26,0.26,1]);
 
   const projection = mat4Perspective(43 * Math.PI / 180, pixelWidth / pixelHeight, 0.1, 900);
   const distance = getSunShadowCameraDistance();
@@ -2069,9 +2181,14 @@ function renderSunShadowScene(result){
   gl.useProgram(sunShadowProgram);
   gl.uniformMatrix4fv(gl.getUniformLocation(sunShadowProgram,'uMatrix'),false,new Float32Array(matrix));
   drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,groundTriangles,groundColors);
-  drawWebGlGeometry(gl,sunShadowProgram,gl.LINES,gridLines,gridColors);
   drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,shadowTriangles,shadowColors);
   drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,buildingTriangles,buildingColors);
+  gl.disable(gl.DEPTH_TEST);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+  drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,markerTriangles,markerColors);
+  gl.disable(gl.BLEND);
+  gl.enable(gl.DEPTH_TEST);
 }
 
 function createWebGlProgram(gl, vertexSource, fragmentSource){
@@ -2118,6 +2235,55 @@ function drawWebGlGeometry(gl, program, mode, positions, colors){
   gl.drawArrays(mode,0,positions.length / 3);
   gl.deleteBuffer(positionBuffer);
   gl.deleteBuffer(colorBuffer);
+}
+
+function addTriangle(positions, colors, a,b,c,color){
+  positions.push(...a,...b,...c);
+  const rgba = normalizeColor(color);
+  colors.push(...rgba,...rgba,...rgba);
+}
+
+function addGradientTriangle(positions, colors, a,b,c,colorA,colorB,colorC){
+  positions.push(...a,...b,...c);
+  colors.push(...normalizeColor(colorA),...normalizeColor(colorB),...normalizeColor(colorC));
+}
+
+function addLocationCylinder(positions,colors,x,y,z,radius,height,color,segments=32){
+  const topY = y + height;
+  const sideColor = normalizeColor(color);
+  const roofColor = shadeColor(color,1.16);
+  const baseColor = shadeColor(color,0.78);
+  for(let i=0;i<segments;i++){
+    const a0 = i / segments * Math.PI * 2;
+    const a1 = (i + 1) / segments * Math.PI * 2;
+    const p0 = [x + Math.cos(a0) * radius, y, z + Math.sin(a0) * radius];
+    const p1 = [x + Math.cos(a1) * radius, y, z + Math.sin(a1) * radius];
+    const p2 = [x + Math.cos(a1) * radius, topY, z + Math.sin(a1) * radius];
+    const p3 = [x + Math.cos(a0) * radius, topY, z + Math.sin(a0) * radius];
+    addQuad(positions,colors,p0,p1,p2,p3,sideColor);
+    addTriangle(positions,colors,[x,topY,z],p3,p2,roofColor);
+    addTriangle(positions,colors,[x,y,z],p1,p0,baseColor);
+  }
+}
+
+function addHeadingTriangle(positions,colors,x,y,z,heading,color){
+  const radians = heading * Math.PI / 180;
+  const dirX = Math.sin(radians);
+  const dirZ = Math.cos(radians);
+  const rightX = Math.cos(radians);
+  const rightZ = -Math.sin(radians);
+
+  // Single flat field-of-view marker.
+  // The narrow point starts at the location cylinder base, and the wide edge opens outward.
+  // Vertex alpha creates the gradient: semi-transparent at the tip, fading to transparent at the wide edge.
+  const apex = [x, y, z];
+  const left = [x + dirX * 18 - rightX * 8, y, z + dirZ * 18 - rightZ * 8];
+  const right = [x + dirX * 18 + rightX * 8, y, z + dirZ * 18 + rightZ * 8];
+  const rgba = normalizeColor(color);
+  const apexColor = [rgba[0],rgba[1],rgba[2],0.46];
+  const wideColor = [rgba[0],rgba[1],rgba[2],0.00];
+
+  addGradientTriangle(positions,colors,apex,left,right,apexColor,wideColor,wideColor);
 }
 
 function addLine(positions, colors, start, end, color){
