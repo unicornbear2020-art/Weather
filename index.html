@@ -2071,41 +2071,13 @@ async function loadSunShadowMapContext(loc){
 }
 
 async function fetchNearbyOsmMapData(lat, lon){
-  const radius = 520;
+  const radius = 420;
   const coastRadius = 5000;
-  const coreQuery = `[out:json][timeout:16];(
-    way["building"](around:${radius},${lat},${lon});
-    way["highway"](around:${radius},${lat},${lon});
-  );out tags geom;`;
-  const waterQuery = `[out:json][timeout:20];(
-    way["natural"="coastline"](around:${coastRadius},${lat},${lon});
-    way["natural"~"^(water|bay|strait)$"](around:${coastRadius},${lat},${lon});
-    way["water"](around:${coastRadius},${lat},${lon});
-    way["landuse"~"^(reservoir|basin)$"](around:${coastRadius},${lat},${lon});
-    way["waterway"~"^(river|canal|stream|riverbank|dock)$"](around:${coastRadius},${lat},${lon});
-    relation["natural"~"^(water|bay|strait)$"](around:${coastRadius},${lat},${lon});
-    relation["water"](around:${coastRadius},${lat},${lon});
-    relation["landuse"~"^(reservoir|basin)$"](around:${coastRadius},${lat},${lon});
-    relation["waterway"~"^(riverbank|dock)$"](around:${coastRadius},${lat},${lon});
-  );out tags geom;`;
-
-  const [coreResult, waterResult] = await Promise.allSettled([
-    fetchOverpassJson(coreQuery),
-    fetchOverpassJson(waterQuery)
-  ]);
-
-  if(coreResult.status !== 'fulfilled' && waterResult.status !== 'fulfilled'){
-    throw new Error('OSM map fetch failed');
-  }
-  if(coreResult.status !== 'fulfilled'){
-    console.warn('OSM building / road fetch failed; continuing with water only.', coreResult.reason);
-  }
-  if(waterResult.status !== 'fulfilled'){
-    console.warn('OSM water fetch failed; continuing with buildings and roads only.', waterResult.reason);
-  }
-
-  const coreElements = coreResult.status === 'fulfilled' ? (coreResult.value.elements || []) : [];
-  const waterElements = waterResult.status === 'fulfilled' ? (waterResult.value.elements || []) : [];
+  const query = `[out:json][timeout:25];(way["building"](around:${radius},${lat},${lon});way["highway"](around:${radius},${lat},${lon});way["natural"="coastline"](around:${coastRadius},${lat},${lon});way["natural"="water"](around:${coastRadius},${lat},${lon});way["landuse"="reservoir"](around:${coastRadius},${lat},${lon});way["waterway"](around:${coastRadius},${lat},${lon}););out tags geom;`;
+  const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
+  const response = await fetch(url, {headers:{Accept:'application/json'}});
+  if(!response.ok) throw new Error('OSM map fetch failed');
+  const data = await response.json();
   const metresPerLonDegree = 111320 * Math.cos(lat * Math.PI / 180);
   const metresPerLatDegree = 110540;
   const toPoint = point => ({
@@ -2115,21 +2087,26 @@ async function fetchNearbyOsmMapData(lat, lon){
     z:(point.lat - lat) * metresPerLatDegree
   });
 
-  const buildingElements = coreElements
+  const buildingElements = (data.elements || [])
     .filter(element => element.tags?.building && Array.isArray(element.geometry) && element.geometry.length >= 4);
-  const roadElements = coreElements
+  const roadElements = (data.elements || [])
     .filter(element => element.tags?.highway && Array.isArray(element.geometry) && element.geometry.length >= 2);
-  const coastlineElements = waterElements
-    .filter(element => element.tags?.natural === 'coastline' && elementHasMapGeometry(element,2));
-  const waterAreaElements = waterElements
-    .filter(element => isWaterAreaFeature(element.tags || {}) && elementHasMapGeometry(element,3));
-  const waterwayElements = waterElements
-    .filter(element => isLinearWaterwayFeature(element.tags || {}) && elementHasMapGeometry(element,2));
+  const coastlineElements = (data.elements || [])
+    .filter(element => element.tags?.natural === 'coastline' && Array.isArray(element.geometry) && element.geometry.length >= 2);
+  const waterAreaElements = (data.elements || [])
+    .filter(element => (
+      element.tags?.natural === 'water' ||
+      element.tags?.landuse === 'reservoir' ||
+      element.tags?.waterway === 'riverbank'
+    ) && Array.isArray(element.geometry) && element.geometry.length >= 3);
+  const waterwayElements = (data.elements || [])
+    .filter(element => (
+      element.tags?.waterway && element.tags?.waterway !== 'riverbank'
+    ) && Array.isArray(element.geometry) && element.geometry.length >= 2);
 
   const buildings = buildingElements
     .map(element => {
       const points = cleanMapPolygonPoints(element.geometry.map(toPoint));
-      if(points.length < 3) return null;
       const xs = points.map(point => point.x);
       const zs = points.map(point => point.z);
       const minX = Math.min(...xs);
@@ -2153,193 +2130,66 @@ async function fetchNearbyOsmMapData(lat, lon){
         distance:Math.hypot(centreX, centreZ)
       };
     })
-    .filter(Boolean)
     .filter(building => building.distance <= radius)
     .sort((a,b) => a.distance - b.distance)
-    .slice(0, 80);
+    .slice(0, 64);
 
   const buildingFootprints = buildingElements
     .map(element => {
       const points = cleanMapPolygonPoints(element.geometry.map(toPoint));
       return {
         points,
-        distance:points.length ? Math.min(...points.map(point => Math.hypot(point.x,point.z))) : Infinity
+        distance:Math.min(...points.map(point => Math.hypot(point.x,point.z)))
       };
     })
-    .filter(footprint => footprint.points.length >= 3 && footprint.distance <= radius)
-    .sort((a,b) => a.distance - b.distance)
-    .slice(0, 220);
-
-  const roads = roadElements
-    .map(element => {
-      const points = element.geometry.map(toPoint).filter(point => isFinite(point.x) && isFinite(point.z));
-      return {
-        points,
-        width:roadWidthFromHighway(element.tags?.highway),
-        type:element.tags?.highway || '',
-        distance:points.length ? Math.min(...points.map(point => Math.hypot(point.x,point.z))) : Infinity
-      };
-    })
-    .filter(road => road.points.length >= 2 && road.distance <= radius)
-    .sort((a,b) => a.distance - b.distance)
-    .slice(0, 260);
-
-  const coastlines = coastlineElements
-    .flatMap(element => extractMapLineStrings(element,toPoint).map(points => ({
-      points,
-      distance:points.length ? Math.min(...points.map(point => Math.hypot(point.x,point.z))) : Infinity
-    })))
-    .filter(line => line.points.length >= 2 && line.distance <= coastRadius)
-    .sort((a,b) => a.distance - b.distance)
-    .slice(0, 260);
-
-  const waterAreas = waterAreaElements
-    .flatMap(element => extractMapAreaRings(element,toPoint).map(points => ({
-      points,
-      distance:points.length ? Math.min(...points.map(point => Math.hypot(point.x,point.z))) : Infinity,
-      area:Math.abs(polygonArea2D(points)),
-      kind:element.tags?.natural || element.tags?.water || element.tags?.waterway || element.tags?.landuse || ''
-    })))
-    .filter(area => area.points.length >= 3 && area.distance <= coastRadius)
-    .sort((a,b) => b.area - a.area || a.distance - b.distance)
-    .slice(0, 200);
-
-  const waterways = waterwayElements
-    .flatMap(element => extractMapLineStrings(element,toPoint).map(points => ({
-      points,
-      width:waterwayWidthFromType(element.tags?.waterway),
-      type:element.tags?.waterway || '',
-      distance:points.length ? Math.min(...points.map(point => Math.hypot(point.x,point.z))) : Infinity
-    })))
-    .filter(waterway => waterway.points.length >= 2 && waterway.distance <= coastRadius)
+    .filter(footprint => footprint.distance <= radius)
     .sort((a,b) => a.distance - b.distance)
     .slice(0, 180);
 
+  const roads = roadElements
+    .map(element => ({
+      points:element.geometry.map(toPoint),
+      width:roadWidthFromHighway(element.tags?.highway),
+      type:element.tags?.highway || '',
+      distance:Math.min(...element.geometry.map(point => Math.hypot(toPoint(point).x,toPoint(point).z)))
+    }))
+    .filter(road => road.distance <= radius)
+    .sort((a,b) => a.distance - b.distance)
+    .slice(0, 220);
+
+  const coastlines = coastlineElements
+    .map(element => ({
+      points:element.geometry.map(toPoint),
+      distance:Math.min(...element.geometry.map(point => Math.hypot(toPoint(point).x,toPoint(point).z)))
+    }))
+    .filter(line => line.distance <= coastRadius)
+    .sort((a,b) => a.distance - b.distance)
+    .slice(0, 160);
+
+  const waterAreas = waterAreaElements
+    .map(element => {
+      const points = cleanMapPolygonPoints(element.geometry.map(toPoint));
+      return {
+        points,
+        distance:Math.min(...points.map(point => Math.hypot(point.x,point.z)))
+      };
+    })
+    .filter(area => area.points.length >= 3 && area.distance <= coastRadius)
+    .sort((a,b) => a.distance - b.distance)
+    .slice(0, 120);
+
+  const waterways = waterwayElements
+    .map(element => ({
+      points:element.geometry.map(toPoint),
+      width:waterwayWidthFromType(element.tags?.waterway),
+      type:element.tags?.waterway || '',
+      distance:Math.min(...element.geometry.map(point => Math.hypot(toPoint(point).x,toPoint(point).z)))
+    }))
+    .filter(waterway => waterway.distance <= coastRadius)
+    .sort((a,b) => a.distance - b.distance)
+    .slice(0, 120);
+
   return { buildings, buildingFootprints, roads, coastlines, waterAreas, waterways };
-}
-
-async function fetchOverpassJson(query){
-  const endpoints = [
-    'https://overpass-api.de/api/interpreter',
-    'https://overpass.kumi.systems/api/interpreter'
-  ];
-  let lastError = null;
-  for(const endpoint of endpoints){
-    try{
-      const response = await fetch(`${endpoint}?data=${encodeURIComponent(query)}`, {headers:{Accept:'application/json'}});
-      if(!response.ok) throw new Error(`Overpass ${response.status}`);
-      return await response.json();
-    }catch(error){
-      lastError = error;
-      console.warn('Overpass request failed', endpoint, error);
-    }
-  }
-  throw lastError || new Error('Overpass request failed');
-}
-
-function isWaterAreaFeature(tags){
-  return tags.natural === 'water' ||
-    tags.natural === 'bay' ||
-    tags.natural === 'strait' ||
-    Boolean(tags.water) ||
-    tags.landuse === 'reservoir' ||
-    tags.landuse === 'basin' ||
-    tags.waterway === 'riverbank' ||
-    tags.waterway === 'dock';
-}
-
-function isLinearWaterwayFeature(tags){
-  return Boolean(tags.waterway) && !['riverbank','dock'].includes(tags.waterway);
-}
-
-function elementHasMapGeometry(element,minPoints){
-  if(Array.isArray(element.geometry) && element.geometry.length >= minPoints) return true;
-  if(Array.isArray(element.members)){
-    return element.members.some(member => Array.isArray(member.geometry) && member.geometry.length >= 2);
-  }
-  return false;
-}
-
-function extractMapLineStrings(element,toPoint){
-  if(Array.isArray(element.geometry) && element.geometry.length >= 2){
-    return [element.geometry.map(toPoint).filter(point => isFinite(point.x) && isFinite(point.z))];
-  }
-  if(Array.isArray(element.members)){
-    return element.members
-      .filter(member => Array.isArray(member.geometry) && member.geometry.length >= 2)
-      .map(member => member.geometry.map(toPoint).filter(point => isFinite(point.x) && isFinite(point.z)))
-      .filter(points => points.length >= 2);
-  }
-  return [];
-}
-
-function extractMapAreaRings(element,toPoint){
-  if(Array.isArray(element.geometry) && element.geometry.length >= 3){
-    const points = cleanMapPolygonPoints(element.geometry.map(toPoint));
-    return points.length >= 3 ? [points] : [];
-  }
-  if(!Array.isArray(element.members)) return [];
-  const outerSegments = element.members
-    .filter(member => member.role !== 'inner' && Array.isArray(member.geometry) && member.geometry.length >= 2)
-    .map(member => member.geometry.map(toPoint).filter(point => isFinite(point.x) && isFinite(point.z)))
-    .filter(points => points.length >= 2);
-  return stitchMapSegmentsIntoRings(outerSegments)
-    .map(cleanMapPolygonPoints)
-    .filter(points => points.length >= 3);
-}
-
-function stitchMapSegmentsIntoRings(segments){
-  const remaining = segments.map(segment => segment.map(point => ({x:point.x,z:point.z})));
-  const rings = [];
-  const tolerance = 6;
-  while(remaining.length){
-    let ring = remaining.shift();
-    let changed = true;
-    while(changed){
-      changed = false;
-      for(let i=0;i<remaining.length;i++){
-        const segment = remaining[i];
-        const ringStart = ring[0];
-        const ringEnd = ring[ring.length - 1];
-        const segStart = segment[0];
-        const segEnd = segment[segment.length - 1];
-        if(pointsNearlyEqual(ringEnd,segStart,tolerance)){
-          ring = ring.concat(segment.slice(1));
-        }else if(pointsNearlyEqual(ringEnd,segEnd,tolerance)){
-          ring = ring.concat(segment.slice(0,-1).reverse());
-        }else if(pointsNearlyEqual(ringStart,segEnd,tolerance)){
-          ring = segment.slice(0,-1).concat(ring);
-        }else if(pointsNearlyEqual(ringStart,segStart,tolerance)){
-          ring = segment.slice(1).reverse().concat(ring);
-        }else{
-          continue;
-        }
-        remaining.splice(i,1);
-        changed = true;
-        break;
-      }
-    }
-    if(ring.length >= 3 && pointsNearlyEqual(ring[0],ring[ring.length - 1],tolerance * 1.5)){
-      ring = ring.slice(0,-1);
-    }
-    if(ring.length >= 3) rings.push(ring);
-  }
-  return rings;
-}
-
-function pointsNearlyEqual(a,b,tolerance=1){
-  return Math.hypot(a.x - b.x, a.z - b.z) <= tolerance;
-}
-
-function polygonArea2D(points){
-  if(!Array.isArray(points) || points.length < 3) return 0;
-  let area = 0;
-  for(let i=0;i<points.length;i++){
-    const a = points[i];
-    const b = points[(i+1) % points.length];
-    area += a.x * b.z - b.x * a.z;
-  }
-  return area / 2;
 }
 
 function cleanMapPolygonPoints(points){
@@ -2732,29 +2582,19 @@ function drawGroundMapFeatures(trianglePositions,triangleColors,linePositions,li
   const lineY = y + 0.035;
 
   // Draw water and coastline first, underneath roads and building footprints.
-  // Prefer closed OSM water multipolygons. If no large water polygon is available,
-  // fall back to an inferred ocean fill from nearby coastline segments.
-  const hasLargeWaterArea = (mapFeatures.waterAreas || []).some(area => Number(area.area) > 20000);
-  if(!hasLargeWaterArea){
-    for(const coastline of mapFeatures.coastlines || []){
-      const points = (coastline.points || []).filter(point => isFinite(point.x) && isFinite(point.z));
-      if(points.length >= 2){
-        addInferredOceanFromCoastline(trianglePositions,triangleColors,points,fillY - 0.065,6500,[0.80,0.82,0.83,0.92]);
-      }
+  // Ocean water usually is not returned by Overpass as a closed polygon, so infer the sea side
+  // from natural=coastline lines by filling the side that faces away from the current location.
+  for(const coastline of mapFeatures.coastlines || []){
+    const points = (coastline.points || []).filter(point => isFinite(point.x) && isFinite(point.z));
+    if(points.length >= 2){
+      addInferredOceanFromCoastline(trianglePositions,triangleColors,points,fillY - 0.055,1700,[0.84,0.86,0.86,1]);
     }
   }
   for(const area of mapFeatures.waterAreas || []){
     const points = cleanMapPolygonPoints(area.points || []);
     if(points.length >= 3){
-      const largeWater = Number(area.area) > 20000;
-      addFlatMapPolygon(
-        trianglePositions,
-        triangleColors,
-        points,
-        fillY - 0.05,
-        largeWater ? [0.80,0.82,0.83,0.95] : [0.88,0.93,0.96,0.85]
-      );
-      addGroundPolylineLines(linePositions,lineColors,[...points,points[0]],lineY + 0.005,[0.54,0.64,0.70,1]);
+      addFlatMapPolygon(trianglePositions,triangleColors,points,fillY - 0.025,[0.92,0.965,0.995,1]);
+      addGroundPolylineLines(linePositions,lineColors,[...points,points[0]],lineY + 0.005,[0.62,0.74,0.84,1]);
     }
   }
   for(const waterway of mapFeatures.waterways || []){
@@ -2774,8 +2614,8 @@ function drawGroundMapFeatures(trianglePositions,triangleColors,linePositions,li
   for(const coastline of mapFeatures.coastlines || []){
     const points = (coastline.points || []).filter(point => isFinite(point.x) && isFinite(point.z));
     if(points.length >= 2){
-      addFlatPolyline(trianglePositions,triangleColors,points,fillY - 0.005,11.0,[0.74,0.78,0.80,1]);
-      addGroundPolylineLines(linePositions,lineColors,points,lineY + 0.02,[0.32,0.40,0.45,1]);
+      addFlatPolyline(trianglePositions,triangleColors,points,fillY - 0.005,9.0,[0.82,0.86,0.87,1]);
+      addGroundPolylineLines(linePositions,lineColors,points,lineY + 0.02,[0.42,0.50,0.54,1]);
     }
   }
 
