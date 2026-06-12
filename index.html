@@ -661,7 +661,7 @@
       <section class="card span12">
         <div class="footnote">
           Data sources: Open-Meteo (multi-model blend), BOM ACCESS-G, BOM surface obs (optional),
-          Open-Meteo Air Quality, RainViewer radar, SunCalc, OpenStreetMap buildings, and SRTM elevation.
+          Open-Meteo Air Quality, RainViewer radar/satellite when available, SunCalc, OpenStreetMap buildings, and SRTM elevation.
         </div>
       </section>
     </div>
@@ -698,7 +698,7 @@ Chart.defaults.color       = '#444444';
 Chart.defaults.borderColor = '#cccccc';
 
 let humChart, uvChart, dayRainChart;
-let rvMap, baseLayer, labelLayer, rvFrames = [], rvIndex = 0, rvTimer = null, overlay = null;
+let rvMap, baseLayer, labelLayer, rvFrames = [], cloudFrames = [], rvIndex = 0, rvTimer = null, overlay = null, cloudOverlay = null;
 let rvHost = 'https://tilecache.rainviewer.com';
 let lastCenter = { lat: DEFAULT_LOC.lat, lon: DEFAULT_LOC.lon };
 let locMarker = null;
@@ -717,7 +717,7 @@ let sunShadowFetchSequence = 0;
 let liveLocationWatchId = null;
 let liveLocationLast = null;
 const LIVE_LOCATION_MIN_MOVE_M = 3;
-const SUN_SHADOW_CONTEXT_REFRESH_M = 60;
+const SUN_SHADOW_CONTEXT_REFRESH_M = 120;
 let sunShadowGl = null;
 let sunShadowProgram = null;
 let sunShadowOrientationMode = 'phone';
@@ -728,7 +728,7 @@ let phoneCompassTimer = null;
 let sunShadowCamera = {
   yaw:-35,
   pitch:48,
-  distanceMap:230
+  distanceMap:320
 };
 let sunShadowPointers = new Map();
 let sunShadowPinchStart = null;
@@ -1668,13 +1668,13 @@ function getSunShadowCameraDistance(){
 }
 
 function setSunShadowCameraDistance(distance){
-  sunShadowCamera.distanceMap = clamp(distance,90,900);
+  sunShadowCamera.distanceMap = clamp(distance,90,1600);
 }
 
 function resetSunShadowView(){
   sunShadowCamera.yaw = -35;
   sunShadowCamera.pitch = 48;
-  sunShadowCamera.distanceMap = 230;
+  sunShadowCamera.distanceMap = 320;
   scheduleSunShadowRender();
 }
 
@@ -2071,9 +2071,9 @@ async function loadSunShadowMapContext(loc){
 }
 
 async function fetchNearbyOsmMapData(lat, lon){
-  const radius = 420;
+  const radius = 850;
   const coastRadius = 5000;
-  const query = `[out:json][timeout:25];(way["building"](around:${radius},${lat},${lon});way["highway"](around:${radius},${lat},${lon});way["natural"="coastline"](around:${coastRadius},${lat},${lon});way["natural"="water"](around:${coastRadius},${lat},${lon});way["landuse"="reservoir"](around:${coastRadius},${lat},${lon});way["waterway"](around:${coastRadius},${lat},${lon}););out tags geom;`;
+  const query = `[out:json][timeout:30];(way["building"](around:${radius},${lat},${lon});way["highway"](around:${radius},${lat},${lon});way["natural"="coastline"](around:${coastRadius},${lat},${lon});way["natural"="water"](around:${coastRadius},${lat},${lon});way["landuse"="reservoir"](around:${coastRadius},${lat},${lon});way["waterway"](around:${coastRadius},${lat},${lon}););out tags geom;`;
   const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
   const response = await fetch(url, {headers:{Accept:'application/json'}});
   if(!response.ok) throw new Error('OSM map fetch failed');
@@ -2132,7 +2132,7 @@ async function fetchNearbyOsmMapData(lat, lon){
     })
     .filter(building => building.distance <= radius)
     .sort((a,b) => a.distance - b.distance)
-    .slice(0, 64);
+    .slice(0, 160);
 
   const buildingFootprints = buildingElements
     .map(element => {
@@ -2144,7 +2144,7 @@ async function fetchNearbyOsmMapData(lat, lon){
     })
     .filter(footprint => footprint.distance <= radius)
     .sort((a,b) => a.distance - b.distance)
-    .slice(0, 180);
+    .slice(0, 360);
 
   const roads = roadElements
     .map(element => ({
@@ -2155,7 +2155,7 @@ async function fetchNearbyOsmMapData(lat, lon){
     }))
     .filter(road => road.distance <= radius)
     .sort((a,b) => a.distance - b.distance)
-    .slice(0, 220);
+    .slice(0, 460);
 
   const coastlines = coastlineElements
     .map(element => ({
@@ -2311,7 +2311,7 @@ function renderSunShadowScene(result){
   const buildingColors = [];
   const markerTriangles = [];
   const markerColors = [];
-  const extent = 900;
+  const extent = 1500;
   // Keep flat layers clearly separated in depth.
   // The previous version placed the solid ground, OSM map lines, and shadows within a few centimetres,
   // which can cause z-fighting / shimmering on mobile GPUs.
@@ -2394,8 +2394,9 @@ function renderSunShadowScene(result){
   // This keeps the blue marker at the base without visually cutting through the cylinder.
   addHeadingTriangle(markerTriangles,markerColors,0,0.03,0,headingForMarker,[0.72,0.88,1.00,1]);
   addLocationCylinder(markerTriangles,markerColors,0,0.12,0,markerRadius,markerHeight,[0.26,0.26,0.26,1]);
+  addSunPositionMarker(markerTriangles,markerColors,result.sunAzimuth,result.sunAltitude);
 
-  const projection = mat4Perspective(43 * Math.PI / 180, pixelWidth / pixelHeight, 0.1, 1500);
+  const projection = mat4Perspective(43 * Math.PI / 180, pixelWidth / pixelHeight, 0.1, 2600);
   const distance = getSunShadowCameraDistance();
   const yawRad = sunShadowCamera.yaw * Math.PI / 180;
   const pitchRad = sunShadowCamera.pitch * Math.PI / 180;
@@ -2535,6 +2536,44 @@ function addLocationCylinder(positions,colors,x,y,z,radius,height,color,segments
     addQuad(positions,colors,p0,p1,p2,p3,sideColor);
     addTriangle(positions,colors,[x,topY,z],p3,p2,roofColor);
     addTriangle(positions,colors,[x,y,z],p1,p0,baseColor);
+  }
+}
+
+function addSunPositionMarker(positions,colors,sunAzimuth,sunAltitude){
+  if(!Number.isFinite(sunAzimuth) || !Number.isFinite(sunAltitude)) return;
+  // Hide the sun marker when the sun is at or below the horizon.
+  if(sunAltitude <= 0) return;
+  // Place a small white sphere in the sun's compass direction and approximate altitude.
+  // It is drawn with the marker overlay pass so it stays visible as a clear position indicator.
+  const displayAzimuth = worldAzimuthToDisplayAzimuth(sunAzimuth);
+  const direction = azimuthToSceneVector(displayAzimuth);
+  const altitudeRad = sunAltitude * Math.PI / 180;
+  const horizontalDistance = 230;
+  const y = clamp(Math.tan(altitudeRad) * horizontalDistance + 28, 16, 240);
+  const x = direction.x * horizontalDistance;
+  const z = direction.z * horizontalDistance;
+  addSphere(positions,colors,x,y,z,8,[1,1,1,0.96],18,9);
+}
+
+function addSphere(positions,colors,x,y,z,radius,color,segments=18,rings=9){
+  const rgba = normalizeColor(color);
+  for(let ring=0; ring<rings; ring++){
+    const phi0 = -Math.PI / 2 + ring / rings * Math.PI;
+    const phi1 = -Math.PI / 2 + (ring + 1) / rings * Math.PI;
+    const y0 = y + Math.sin(phi0) * radius;
+    const y1 = y + Math.sin(phi1) * radius;
+    const r0 = Math.cos(phi0) * radius;
+    const r1 = Math.cos(phi1) * radius;
+    for(let seg=0; seg<segments; seg++){
+      const a0 = seg / segments * Math.PI * 2;
+      const a1 = (seg + 1) / segments * Math.PI * 2;
+      const p00 = [x + Math.cos(a0) * r0, y0, z + Math.sin(a0) * r0];
+      const p01 = [x + Math.cos(a1) * r0, y0, z + Math.sin(a1) * r0];
+      const p11 = [x + Math.cos(a1) * r1, y1, z + Math.sin(a1) * r1];
+      const p10 = [x + Math.cos(a0) * r1, y1, z + Math.sin(a0) * r1];
+      addGradientTriangle(positions,colors,p00,p01,p11,rgba,rgba,rgba);
+      addGradientTriangle(positions,colors,p00,p11,p10,rgba,rgba,rgba);
+    }
   }
 }
 
@@ -3110,6 +3149,14 @@ async function initMap(){
     }
   ).addTo(rvMap);
 
+  rvMap.createPane('cloudOverlay');
+  rvMap.getPane('cloudOverlay').style.zIndex = 410;
+  rvMap.getPane('cloudOverlay').style.pointerEvents = 'none';
+
+  rvMap.createPane('radarOverlay');
+  rvMap.getPane('radarOverlay').style.zIndex = 430;
+  rvMap.getPane('radarOverlay').style.pointerEvents = 'none';
+
   rvMap.createPane('placeLabels');
   rvMap.getPane('placeLabels').style.zIndex = 450;
   rvMap.getPane('placeLabels').style.pointerEvents = 'none';
@@ -3141,30 +3188,85 @@ function selectMapLocation(latlng){
 async function refreshFrames(){
   setRadarState('loading');
   try{
-    const res  = await fetch('https://api.rainviewer.com/public/weather-maps.json', {cache:'no-store'});
-    if(!res.ok) throw new Error(`RainViewer returned ${res.status}`);
-    const meta = await res.json();
+    const meta = await fetchRainViewerMetadata();
     rvHost = meta.host || rvHost;
-    const rp = meta.radar?.past ?? [];
-    const rn = meta.radar?.nowcast ?? [];
-    rvFrames  = [...rp.slice(-6), ...rn.slice(0,5)].map(f=>({time:f.time, path:f.path}));
+    const past = (meta.radar?.past ?? []).filter(frame => frame?.path && Number.isFinite(Number(frame.time)));
+    const nowcast = (meta.radar?.nowcast ?? []).filter(frame => frame?.path && Number.isFinite(Number(frame.time)));
+    cloudFrames = (meta.satellite?.infrared ?? [])
+      .filter(frame => frame?.path && Number.isFinite(Number(frame.time)))
+      .map(frame => ({time:Number(frame.time), path:String(frame.path)}))
+      .sort((a,b) => a.time - b.time);
+    const combined = [...past.slice(-8), ...nowcast.slice(0,6)];
+    const seen = new Set();
+    rvFrames = combined
+      .map(frame => ({time:Number(frame.time), path:String(frame.path)}))
+      .filter(frame => {
+        const key = `${frame.time}:${frame.path}`;
+        if(seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a,b) => a.time - b.time);
+
     if(!rvFrames.length){
       setRadarState('empty');
       showFrame(0);
       return;
     }
-    rvIndex = Math.max(rvFrames.length - rn.length, 0);
-    setRadarState('ready');
+
+    // If RainViewer has no nowcast frames, start from the newest past frame.
+    // The old logic wrapped to the earliest frame when nowcast.length === 0.
+    rvIndex = nowcast.length
+      ? Math.max(0, rvFrames.findIndex(frame => frame.time === Number(nowcast[0].time)))
+      : rvFrames.length - 1;
+    if(rvIndex < 0) rvIndex = Math.max(rvFrames.length - nowcast.length,0);
     showFrame(rvIndex);
   }catch(e){
     console.error('RainViewer error', e);
     rvFrames = [];
+    cloudFrames = [];
     setRadarState('error');
   }
 }
 
+async function fetchRainViewerMetadata(){
+  const endpoints = [
+    'https://api.rainviewer.com/public/weather-maps.json'
+  ];
+  let lastError = null;
+  for(const endpoint of endpoints){
+    try{
+      const response = await fetch(`${endpoint}?t=${Date.now()}`, {cache:'no-store'});
+      if(!response.ok) throw new Error(`RainViewer returned ${response.status}`);
+      return await response.json();
+    }catch(error){
+      lastError = error;
+    }
+  }
+  throw lastError || new Error('RainViewer metadata unavailable');
+}
+
 function layerUrl(frame){
   return `${rvHost}${frame.path}/256/{z}/{x}/{y}/2/1_1.png`;
+}
+
+function cloudLayerUrl(frame){
+  return `${rvHost}${frame.path}/256/{z}/{x}/{y}/0/0_0.png`;
+}
+
+function findClosestCloudFrame(targetTime){
+  if(!cloudFrames.length || !Number.isFinite(targetTime)) return null;
+  let best = cloudFrames[0];
+  let bestDiff = Math.abs(best.time - targetTime);
+  for(const frame of cloudFrames){
+    const diff = Math.abs(frame.time - targetTime);
+    if(diff < bestDiff){
+      best = frame;
+      bestDiff = diff;
+    }
+  }
+  // Avoid showing a stale cloud layer if the satellite frame is far from the radar timeline.
+  return bestDiff <= 90 * 60 ? best : null;
 }
 
 function showFrame(i){
@@ -3174,35 +3276,65 @@ function showFrame(i){
       rvMap.removeLayer(overlay);
       overlay = null;
     }
+    if(cloudOverlay){
+      rvMap.removeLayer(cloudOverlay);
+      cloudOverlay = null;
+    }
     return;
   }
+  if(rvMap) rvMap.invalidateSize();
   rvIndex = (i + frames.length) % frames.length;
   const f = frames[rvIndex];
+  const cloudFrame = findClosestCloudFrame(f.time);
+  if(cloudOverlay){
+    rvMap.removeLayer(cloudOverlay);
+    cloudOverlay = null;
+  }
+  if(cloudFrame){
+    cloudOverlay = L.tileLayer(cloudLayerUrl(cloudFrame), {
+      pane:'cloudOverlay',
+      tileSize:256,
+      maxNativeZoom:7,
+      maxZoom:19,
+      opacity:0.36,
+      crossOrigin:true,
+      updateWhenIdle:true,
+      keepBuffer:2
+    });
+    cloudOverlay.on('tileerror', () => console.info('RainViewer satellite tile unavailable'));
+    cloudOverlay.addTo(rvMap);
+  }
   if(overlay) rvMap.removeLayer(overlay);
   overlay = L.tileLayer(layerUrl(f), {
+    pane:'radarOverlay',
     tileSize:256,
     maxNativeZoom:7,
     maxZoom:19,
-    opacity:0.5,
-    zIndex:400
+    opacity:0.62,
+    crossOrigin:true,
+    updateWhenIdle:true,
+    keepBuffer:2
   });
   radarTileErrors = 0;
   overlay.on('tileerror', () => {
+    // RainViewer may return missing/empty radar tiles for dry areas or uncovered tiles.
+    // Do not switch the whole radar UI into an error state because of a few missing tiles.
     radarTileErrors += 1;
-    if(radarTileErrors >= 4) setRadarState('coverage');
+    console.info('RainViewer tile unavailable', radarTileErrors);
   });
-  overlay.on('load', () => {
-    if(radarTileErrors < 4) setRadarState('ready');
-  });
+  overlay.on('load', () => setRadarState('ready'));
   overlay.addTo(rvMap);
+  setRadarState('ready');
   const ts = new Date(f.time*1000);
+  const latestLabel = rvIndex === frames.length - 1 ? 'latest' : `${rvIndex + 1}/${frames.length}`;
+  const cloudLabel = cloudFrame ? 'cloud layer on' : 'cloud layer unavailable';
   $('#rvLabel').textContent = `Radar time: ${
     ts.toLocaleString(undefined,{
       hour:'numeric',
       minute:'2-digit',
       hour12:true
     })
-  } (local)`;
+  } (local · ${latestLabel} · ${cloudLabel})`;
 }
 
 function setRadarState(state){
@@ -3212,8 +3344,8 @@ function setRadarState(state){
   const states = {
     loading: ['Loading radar…', '', true],
     ready: ['', '', false],
-    empty: ['Radar unavailable', 'No radar frames or coverage are currently available for this location.', true],
-    coverage: ['No radar coverage', 'Radar tiles are unavailable at this location or zoom level.', true],
+    empty: ['Radar unavailable', 'No radar frames are currently available from the radar provider.', true],
+    coverage: ['Radar loaded', 'No rain may be visible if the selected frame has little or no precipitation over this area.', false],
     error: ['Radar temporarily unavailable', 'The radar service could not be reached. Forecast data is still available.', true]
   };
   const [title, detail, disabled] = states[state] || states.error;
