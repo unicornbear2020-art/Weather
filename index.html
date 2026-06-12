@@ -238,6 +238,13 @@
     }
     .sun-shadow-field input[type="date"]{
       width:100%;
+      max-width:220px;
+      justify-self:center;
+    }
+    .sun-shadow-date-field{
+      width:100%;
+      max-width:260px;
+      margin:0 auto;
     }
     .sun-shadow-field input[type="range"]{
       width:100%;
@@ -254,6 +261,9 @@
     #sunShadowTimeLabel{
       color:var(--text);
       font-size:14px;
+    }
+    .sun-shadow-orientation-control{
+      display:none;
     }
     .sun-shadow-modes{
       display:flex;
@@ -505,6 +515,8 @@
       #sunShadowCanvas{height:min(420px,70vh)}
       .sun-shadow-summary{font-size:12px}
       .sun-shadow-controls{font-size:13px}
+      .sun-shadow-date-field{max-width:190px}
+      .sun-shadow-field input[type="date"]{max-width:180px}
     }
   </style>
 </head>
@@ -587,14 +599,14 @@
           </div>
           <div id="sunShadowStatus" class="sun-shadow-status"></div>
           <div class="sun-shadow-controls">
-            <div>
+            <div class="sun-shadow-orientation-control" aria-hidden="true">
               <div class="sun-shadow-mode-label">Orientation</div>
               <div class="sun-shadow-modes" role="group" aria-label="Sun shadow orientation mode">
-                <button type="button" class="sun-shadow-mode is-active" id="sunShadowNorthUp" aria-pressed="true">North-up</button>
-                <button type="button" class="sun-shadow-mode" id="sunShadowPhoneMode" aria-pressed="false">Phone direction</button>
+                <button type="button" class="sun-shadow-mode" id="sunShadowNorthUp" aria-pressed="false">North-up</button>
+                <button type="button" class="sun-shadow-mode is-active" id="sunShadowPhoneMode" aria-pressed="true">Phone direction</button>
               </div>
-              <div id="sunShadowCompassStatus" class="sun-shadow-status" role="status" aria-live="polite"></div>
             </div>
+            <div id="sunShadowCompassStatus" class="sun-shadow-status" role="status" aria-live="polite"></div>
             <div class="sun-shadow-field">
               <label for="sunShadowTime">Time</label>
               <input id="sunShadowTime" type="range" min="360" max="1080" step="5" value="720">
@@ -604,7 +616,7 @@
                 <span id="sunShadowSunset">Sunset —</span>
               </div>
             </div>
-            <div class="sun-shadow-field">
+            <div class="sun-shadow-field sun-shadow-date-field">
               <label for="sunShadowDate">Date</label>
               <input id="sunShadowDate" type="date">
             </div>
@@ -697,6 +709,7 @@ let loadSequence = 0;
 let selectedLocation = {...DEFAULT_LOC};
 let sunShadowMode = 'map';
 let sunShadowBuildings = [];
+let sunShadowMapFeatures = { roads:[], buildingFootprints:[], coastlines:[], waterAreas:[], waterways:[] };
 let sunShadowElevation = null;
 let sunShadowLocationKey = '';
 let sunShadowContextOrigin = null;
@@ -707,7 +720,7 @@ const LIVE_LOCATION_MIN_MOVE_M = 3;
 const SUN_SHADOW_CONTEXT_REFRESH_M = 60;
 let sunShadowGl = null;
 let sunShadowProgram = null;
-let sunShadowOrientationMode = 'north';
+let sunShadowOrientationMode = 'phone';
 let phoneHeading = null;
 let phoneCompassListening = false;
 let phoneCompassEventName = null;
@@ -754,7 +767,10 @@ async function init() {
 
   $('#searchBtn').addEventListener('click', ()=> onSearch());
   const locBtn = $('#locBtn');
-  if (locBtn) locBtn.addEventListener('click', ()=> useCurrentLocation());
+  if (locBtn) locBtn.addEventListener('click', () => {
+    useCurrentLocation();
+    requestPhoneCompassPermission();
+  });
   if (useObsEl) useObsEl.addEventListener('change', ()=> refresh());
   initSunShadowSimulator();
   await initMap();
@@ -1568,8 +1584,11 @@ function initSunShadowSimulator(){
     configureSunShadowDay(true);
   });
   timeInput.addEventListener('input', renderCurrentSunShadow);
-  $('#sunShadowNorthUp').addEventListener('click', () => setSunShadowOrientationMode('north'));
-  $('#sunShadowPhoneMode').addEventListener('click', requestPhoneCompassPermission);
+  const northButton = $('#sunShadowNorthUp');
+  const phoneButton = $('#sunShadowPhoneMode');
+  if(northButton) northButton.addEventListener('click', () => setSunShadowOrientationMode('north'));
+  if(phoneButton) phoneButton.addEventListener('click', requestPhoneCompassPermission);
+  setSunShadowOrientationMode('phone');
 
   let resizeTimer = null;
   window.addEventListener('resize', () => {
@@ -1583,6 +1602,11 @@ function initSunShadowSimulator(){
 
 function initSunShadowCameraControls(){
   const canvas = $('#sunShadowCanvas');
+  canvas.addEventListener('pointerdown', () => {
+    if(sunShadowOrientationMode === 'phone' && !phoneCompassListening){
+      requestPhoneCompassPermission();
+    }
+  }, {once:true});
   canvas.addEventListener('pointerdown', event => {
     event.preventDefault();
     sunShadowPointers.set(event.pointerId,{x:event.clientX,y:event.clientY});
@@ -1644,7 +1668,7 @@ function getSunShadowCameraDistance(){
 }
 
 function setSunShadowCameraDistance(distance){
-  sunShadowCamera.distanceMap = clamp(distance,90,480);
+  sunShadowCamera.distanceMap = clamp(distance,90,900);
 }
 
 function resetSunShadowView(){
@@ -1684,6 +1708,7 @@ function updateSunShadowSimulator(loc, options={}){
   if(shouldRefreshContext){
     if(!sunShadowContextOrigin){
       sunShadowBuildings = [];
+      sunShadowMapFeatures = { roads:[], buildingFootprints:[], coastlines:[], waterAreas:[], waterways:[] };
       sunShadowElevation = null;
     }
     loadSunShadowMapContext(selectedLocation);
@@ -1742,6 +1767,7 @@ function renderCurrentSunShadow(){
   result.location = selectedLocation;
   result.timezone = tz;
   result.buildings = getSunShadowBuildingsForLocation(selectedLocation);
+  result.mapFeatures = getSunShadowMapFeaturesForLocation(selectedLocation);
   result.elevation = sunShadowElevation;
   result.mode = sunShadowMode;
   result.orientationMode = sunShadowOrientationMode;
@@ -1880,10 +1906,14 @@ function updateSunShadowOrientationButtons(){
   const northUp = sunShadowOrientationMode === 'north';
   const northButton = $('#sunShadowNorthUp');
   const phoneButton = $('#sunShadowPhoneMode');
-  northButton.classList.toggle('is-active', northUp);
-  phoneButton.classList.toggle('is-active', !northUp);
-  northButton.setAttribute('aria-pressed', String(northUp));
-  phoneButton.setAttribute('aria-pressed', String(!northUp));
+  if(northButton){
+    northButton.classList.toggle('is-active', northUp);
+    northButton.setAttribute('aria-pressed', String(northUp));
+  }
+  if(phoneButton){
+    phoneButton.classList.toggle('is-active', !northUp);
+    phoneButton.setAttribute('aria-pressed', String(!northUp));
+  }
 }
 
 function worldAzimuthToDisplayAzimuth(worldAzimuth){
@@ -1924,6 +1954,35 @@ function getSunShadowBuildingsForLocation(loc){
   }));
 }
 
+function getSunShadowMapFeaturesForLocation(loc){
+  const empty = { roads:[], buildingFootprints:[], coastlines:[], waterAreas:[], waterways:[] };
+  if(!sunShadowContextOrigin || !sunShadowMapFeatures) return sunShadowMapFeatures || empty;
+  const offset = localMetreOffset(sunShadowContextOrigin, loc);
+  const shiftPoint = point => ({ x:point.x - offset.x, z:point.z - offset.z });
+  return {
+    roads:(sunShadowMapFeatures.roads || []).map(road => ({
+      ...road,
+      points:(road.points || []).map(shiftPoint)
+    })),
+    buildingFootprints:(sunShadowMapFeatures.buildingFootprints || []).map(footprint => ({
+      ...footprint,
+      points:(footprint.points || []).map(shiftPoint)
+    })),
+    coastlines:(sunShadowMapFeatures.coastlines || []).map(line => ({
+      ...line,
+      points:(line.points || []).map(shiftPoint)
+    })),
+    waterAreas:(sunShadowMapFeatures.waterAreas || []).map(area => ({
+      ...area,
+      points:(area.points || []).map(shiftPoint)
+    })),
+    waterways:(sunShadowMapFeatures.waterways || []).map(waterway => ({
+      ...waterway,
+      points:(waterway.points || []).map(shiftPoint)
+    }))
+  };
+}
+
 function localMetreOffset(fromLoc, toLoc){
   const fromLat = Number(fromLoc?.lat);
   const fromLon = Number(fromLoc?.lon);
@@ -1936,7 +1995,9 @@ function localMetreOffset(fromLoc, toLoc){
   const metresPerLonDegree = 111320 * Math.cos(averageLat * Math.PI / 180);
   const metresPerLatDegree = 110540;
   return {
-    x:(toLon - fromLon) * metresPerLonDegree,
+    // Match the simulator ground-map orientation: east/west is mirrored here so
+    // the WebGL scene lines up visually with the radar/map view.
+    x:(fromLon - toLon) * metresPerLonDegree,
     z:(toLat - fromLat) * metresPerLatDegree
   };
 }
@@ -1960,10 +2021,10 @@ async function loadSunShadowMapContext(loc){
   if(!isFinite(loc?.lat) || !isFinite(loc?.lon)) return;
   const fetchId = ++sunShadowFetchSequence;
   const status = $('#sunShadowStatus');
-  status.textContent = 'Loading nearby building outlines and terrain height…';
+  status.textContent = 'Loading nearby map, building outlines and terrain height…';
 
-  const [buildingsResult, elevationResult] = await Promise.allSettled([
-    fetchNearbyOsmBuildings(loc.lat, loc.lon),
+  const [mapResult, elevationResult] = await Promise.allSettled([
+    fetchNearbyOsmMapData(loc.lat, loc.lon),
     getElevation(loc.lat, loc.lon)
   ]);
   if(fetchId !== sunShadowFetchSequence) return;
@@ -1972,14 +2033,33 @@ async function loadSunShadowMapContext(loc){
     lat:Number(loc.lat),
     lon:Number(loc.lon)
   };
-  sunShadowBuildings = buildingsResult.status === 'fulfilled' ? buildingsResult.value : [];
+  const mapData = mapResult.status === 'fulfilled'
+    ? mapResult.value
+    : { buildings:[], roads:[], buildingFootprints:[], coastlines:[], waterAreas:[], waterways:[] };
+  sunShadowBuildings = mapData.buildings || [];
+  sunShadowMapFeatures = {
+    roads:mapData.roads || [],
+    buildingFootprints:mapData.buildingFootprints || [],
+    coastlines:mapData.coastlines || [],
+    waterAreas:mapData.waterAreas || [],
+    waterways:mapData.waterways || []
+  };
   sunShadowElevation = elevationResult.status === 'fulfilled' ? elevationResult.value : null;
 
   const messages = [];
   if(sunShadowBuildings.length){
     messages.push(`${sunShadowBuildings.length} nearby building outlines`);
   }else{
-    messages.push('Building outlines unavailable. Showing the simple object');
+    messages.push('Building outlines unavailable. Showing flat map only');
+  }
+  if(sunShadowMapFeatures.roads.length){
+    messages.push(`${sunShadowMapFeatures.roads.length} nearby street lines`);
+  }
+  const waterFeatureCount = (sunShadowMapFeatures.coastlines?.length || 0) +
+    (sunShadowMapFeatures.waterAreas?.length || 0) +
+    (sunShadowMapFeatures.waterways?.length || 0);
+  if(waterFeatureCount){
+    messages.push(`${waterFeatureCount} coastline / water features`);
   }
   if(sunShadowElevation != null){
     messages.push(`terrain elevation approx. ${Math.round(sunShadowElevation)} m`);
@@ -1990,46 +2070,304 @@ async function loadSunShadowMapContext(loc){
   renderCurrentSunShadow();
 }
 
-async function fetchNearbyOsmBuildings(lat, lon){
-  const radius = 150;
-  const query = `[out:json][timeout:12];way["building"](around:${radius},${lat},${lon});out tags geom;`;
-  const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
-  const response = await fetch(url, {headers:{Accept:'application/json'}});
-  if(!response.ok) throw new Error('OSM building fetch failed');
-  const data = await response.json();
+async function fetchNearbyOsmMapData(lat, lon){
+  const radius = 520;
+  const coastRadius = 5000;
+  const coreQuery = `[out:json][timeout:16];(
+    way["building"](around:${radius},${lat},${lon});
+    way["highway"](around:${radius},${lat},${lon});
+  );out tags geom;`;
+  const waterQuery = `[out:json][timeout:20];(
+    way["natural"="coastline"](around:${coastRadius},${lat},${lon});
+    way["natural"~"^(water|bay|strait)$"](around:${coastRadius},${lat},${lon});
+    way["water"](around:${coastRadius},${lat},${lon});
+    way["landuse"~"^(reservoir|basin)$"](around:${coastRadius},${lat},${lon});
+    way["waterway"~"^(river|canal|stream|riverbank|dock)$"](around:${coastRadius},${lat},${lon});
+    relation["natural"~"^(water|bay|strait)$"](around:${coastRadius},${lat},${lon});
+    relation["water"](around:${coastRadius},${lat},${lon});
+    relation["landuse"~"^(reservoir|basin)$"](around:${coastRadius},${lat},${lon});
+    relation["waterway"~"^(riverbank|dock)$"](around:${coastRadius},${lat},${lon});
+  );out tags geom;`;
+
+  const [coreResult, waterResult] = await Promise.allSettled([
+    fetchOverpassJson(coreQuery),
+    fetchOverpassJson(waterQuery)
+  ]);
+
+  if(coreResult.status !== 'fulfilled' && waterResult.status !== 'fulfilled'){
+    throw new Error('OSM map fetch failed');
+  }
+  if(coreResult.status !== 'fulfilled'){
+    console.warn('OSM building / road fetch failed; continuing with water only.', coreResult.reason);
+  }
+  if(waterResult.status !== 'fulfilled'){
+    console.warn('OSM water fetch failed; continuing with buildings and roads only.', waterResult.reason);
+  }
+
+  const coreElements = coreResult.status === 'fulfilled' ? (coreResult.value.elements || []) : [];
+  const waterElements = waterResult.status === 'fulfilled' ? (waterResult.value.elements || []) : [];
   const metresPerLonDegree = 111320 * Math.cos(lat * Math.PI / 180);
   const metresPerLatDegree = 110540;
+  const toPoint = point => ({
+    // Flip longitude compared with normal mathematical x so the flat OSM map
+    // matches the visual orientation of the simulator instead of appearing left-right reversed.
+    x:(lon - point.lon) * metresPerLonDegree,
+    z:(point.lat - lat) * metresPerLatDegree
+  });
 
-  return (data.elements || [])
-    .filter(element => Array.isArray(element.geometry) && element.geometry.length >= 4)
+  const buildingElements = coreElements
+    .filter(element => element.tags?.building && Array.isArray(element.geometry) && element.geometry.length >= 4);
+  const roadElements = coreElements
+    .filter(element => element.tags?.highway && Array.isArray(element.geometry) && element.geometry.length >= 2);
+  const coastlineElements = waterElements
+    .filter(element => element.tags?.natural === 'coastline' && elementHasMapGeometry(element,2));
+  const waterAreaElements = waterElements
+    .filter(element => isWaterAreaFeature(element.tags || {}) && elementHasMapGeometry(element,3));
+  const waterwayElements = waterElements
+    .filter(element => isLinearWaterwayFeature(element.tags || {}) && elementHasMapGeometry(element,2));
+
+  const buildings = buildingElements
     .map(element => {
-      const points = element.geometry.map(point => ({
-        x:(point.lon - lon) * metresPerLonDegree,
-        z:(point.lat - lat) * metresPerLatDegree
-      }));
+      const points = cleanMapPolygonPoints(element.geometry.map(toPoint));
+      if(points.length < 3) return null;
       const xs = points.map(point => point.x);
       const zs = points.map(point => point.z);
       const minX = Math.min(...xs);
       const maxX = Math.max(...xs);
       const minZ = Math.min(...zs);
       const maxZ = Math.max(...zs);
+      const centreX = (minX + maxX) / 2;
+      const centreZ = (minZ + maxZ) / 2;
       const taggedHeight = parseFloat(String(element.tags?.height || '').replace(/[^\d.]/g,''));
       const levels = parseFloat(element.tags?.['building:levels']);
       const height = isFinite(taggedHeight) && taggedHeight > 0
         ? taggedHeight
         : (isFinite(levels) && levels > 0 ? levels * 3 : 8);
       return {
-        x:(minX + maxX) / 2,
-        z:(minZ + maxZ) / 2,
+        x:centreX,
+        z:centreZ,
         width:Math.max(maxX - minX, 2),
         depth:Math.max(maxZ - minZ, 2),
         height:clamp(height, 3, 35),
-        distance:Math.hypot((minX + maxX) / 2, (minZ + maxZ) / 2)
+        points,
+        distance:Math.hypot(centreX, centreZ)
       };
     })
+    .filter(Boolean)
     .filter(building => building.distance <= radius)
     .sort((a,b) => a.distance - b.distance)
-    .slice(0, 36);
+    .slice(0, 80);
+
+  const buildingFootprints = buildingElements
+    .map(element => {
+      const points = cleanMapPolygonPoints(element.geometry.map(toPoint));
+      return {
+        points,
+        distance:points.length ? Math.min(...points.map(point => Math.hypot(point.x,point.z))) : Infinity
+      };
+    })
+    .filter(footprint => footprint.points.length >= 3 && footprint.distance <= radius)
+    .sort((a,b) => a.distance - b.distance)
+    .slice(0, 220);
+
+  const roads = roadElements
+    .map(element => {
+      const points = element.geometry.map(toPoint).filter(point => isFinite(point.x) && isFinite(point.z));
+      return {
+        points,
+        width:roadWidthFromHighway(element.tags?.highway),
+        type:element.tags?.highway || '',
+        distance:points.length ? Math.min(...points.map(point => Math.hypot(point.x,point.z))) : Infinity
+      };
+    })
+    .filter(road => road.points.length >= 2 && road.distance <= radius)
+    .sort((a,b) => a.distance - b.distance)
+    .slice(0, 260);
+
+  const coastlines = coastlineElements
+    .flatMap(element => extractMapLineStrings(element,toPoint).map(points => ({
+      points,
+      distance:points.length ? Math.min(...points.map(point => Math.hypot(point.x,point.z))) : Infinity
+    })))
+    .filter(line => line.points.length >= 2 && line.distance <= coastRadius)
+    .sort((a,b) => a.distance - b.distance)
+    .slice(0, 260);
+
+  const waterAreas = waterAreaElements
+    .flatMap(element => extractMapAreaRings(element,toPoint).map(points => ({
+      points,
+      distance:points.length ? Math.min(...points.map(point => Math.hypot(point.x,point.z))) : Infinity,
+      area:Math.abs(polygonArea2D(points)),
+      kind:element.tags?.natural || element.tags?.water || element.tags?.waterway || element.tags?.landuse || ''
+    })))
+    .filter(area => area.points.length >= 3 && area.distance <= coastRadius)
+    .sort((a,b) => b.area - a.area || a.distance - b.distance)
+    .slice(0, 200);
+
+  const waterways = waterwayElements
+    .flatMap(element => extractMapLineStrings(element,toPoint).map(points => ({
+      points,
+      width:waterwayWidthFromType(element.tags?.waterway),
+      type:element.tags?.waterway || '',
+      distance:points.length ? Math.min(...points.map(point => Math.hypot(point.x,point.z))) : Infinity
+    })))
+    .filter(waterway => waterway.points.length >= 2 && waterway.distance <= coastRadius)
+    .sort((a,b) => a.distance - b.distance)
+    .slice(0, 180);
+
+  return { buildings, buildingFootprints, roads, coastlines, waterAreas, waterways };
+}
+
+async function fetchOverpassJson(query){
+  const endpoints = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter'
+  ];
+  let lastError = null;
+  for(const endpoint of endpoints){
+    try{
+      const response = await fetch(`${endpoint}?data=${encodeURIComponent(query)}`, {headers:{Accept:'application/json'}});
+      if(!response.ok) throw new Error(`Overpass ${response.status}`);
+      return await response.json();
+    }catch(error){
+      lastError = error;
+      console.warn('Overpass request failed', endpoint, error);
+    }
+  }
+  throw lastError || new Error('Overpass request failed');
+}
+
+function isWaterAreaFeature(tags){
+  return tags.natural === 'water' ||
+    tags.natural === 'bay' ||
+    tags.natural === 'strait' ||
+    Boolean(tags.water) ||
+    tags.landuse === 'reservoir' ||
+    tags.landuse === 'basin' ||
+    tags.waterway === 'riverbank' ||
+    tags.waterway === 'dock';
+}
+
+function isLinearWaterwayFeature(tags){
+  return Boolean(tags.waterway) && !['riverbank','dock'].includes(tags.waterway);
+}
+
+function elementHasMapGeometry(element,minPoints){
+  if(Array.isArray(element.geometry) && element.geometry.length >= minPoints) return true;
+  if(Array.isArray(element.members)){
+    return element.members.some(member => Array.isArray(member.geometry) && member.geometry.length >= 2);
+  }
+  return false;
+}
+
+function extractMapLineStrings(element,toPoint){
+  if(Array.isArray(element.geometry) && element.geometry.length >= 2){
+    return [element.geometry.map(toPoint).filter(point => isFinite(point.x) && isFinite(point.z))];
+  }
+  if(Array.isArray(element.members)){
+    return element.members
+      .filter(member => Array.isArray(member.geometry) && member.geometry.length >= 2)
+      .map(member => member.geometry.map(toPoint).filter(point => isFinite(point.x) && isFinite(point.z)))
+      .filter(points => points.length >= 2);
+  }
+  return [];
+}
+
+function extractMapAreaRings(element,toPoint){
+  if(Array.isArray(element.geometry) && element.geometry.length >= 3){
+    const points = cleanMapPolygonPoints(element.geometry.map(toPoint));
+    return points.length >= 3 ? [points] : [];
+  }
+  if(!Array.isArray(element.members)) return [];
+  const outerSegments = element.members
+    .filter(member => member.role !== 'inner' && Array.isArray(member.geometry) && member.geometry.length >= 2)
+    .map(member => member.geometry.map(toPoint).filter(point => isFinite(point.x) && isFinite(point.z)))
+    .filter(points => points.length >= 2);
+  return stitchMapSegmentsIntoRings(outerSegments)
+    .map(cleanMapPolygonPoints)
+    .filter(points => points.length >= 3);
+}
+
+function stitchMapSegmentsIntoRings(segments){
+  const remaining = segments.map(segment => segment.map(point => ({x:point.x,z:point.z})));
+  const rings = [];
+  const tolerance = 6;
+  while(remaining.length){
+    let ring = remaining.shift();
+    let changed = true;
+    while(changed){
+      changed = false;
+      for(let i=0;i<remaining.length;i++){
+        const segment = remaining[i];
+        const ringStart = ring[0];
+        const ringEnd = ring[ring.length - 1];
+        const segStart = segment[0];
+        const segEnd = segment[segment.length - 1];
+        if(pointsNearlyEqual(ringEnd,segStart,tolerance)){
+          ring = ring.concat(segment.slice(1));
+        }else if(pointsNearlyEqual(ringEnd,segEnd,tolerance)){
+          ring = ring.concat(segment.slice(0,-1).reverse());
+        }else if(pointsNearlyEqual(ringStart,segEnd,tolerance)){
+          ring = segment.slice(0,-1).concat(ring);
+        }else if(pointsNearlyEqual(ringStart,segStart,tolerance)){
+          ring = segment.slice(1).reverse().concat(ring);
+        }else{
+          continue;
+        }
+        remaining.splice(i,1);
+        changed = true;
+        break;
+      }
+    }
+    if(ring.length >= 3 && pointsNearlyEqual(ring[0],ring[ring.length - 1],tolerance * 1.5)){
+      ring = ring.slice(0,-1);
+    }
+    if(ring.length >= 3) rings.push(ring);
+  }
+  return rings;
+}
+
+function pointsNearlyEqual(a,b,tolerance=1){
+  return Math.hypot(a.x - b.x, a.z - b.z) <= tolerance;
+}
+
+function polygonArea2D(points){
+  if(!Array.isArray(points) || points.length < 3) return 0;
+  let area = 0;
+  for(let i=0;i<points.length;i++){
+    const a = points[i];
+    const b = points[(i+1) % points.length];
+    area += a.x * b.z - b.x * a.z;
+  }
+  return area / 2;
+}
+
+function cleanMapPolygonPoints(points){
+  const clean = (points || [])
+    .filter(point => isFinite(point.x) && isFinite(point.z))
+    .map(point => ({x:Number(point.x), z:Number(point.z)}));
+  if(clean.length > 1){
+    const first = clean[0];
+    const last = clean[clean.length - 1];
+    if(Math.hypot(first.x - last.x, first.z - last.z) < 0.05){
+      clean.pop();
+    }
+  }
+  return clean;
+}
+
+function roadWidthFromHighway(highway){
+  if(['motorway','trunk','primary'].includes(highway)) return 7;
+  if(['secondary','tertiary'].includes(highway)) return 5;
+  if(['residential','unclassified','living_street','service'].includes(highway)) return 3.2;
+  if(['footway','path','cycleway','steps','pedestrian'].includes(highway)) return 1.8;
+  return 2.6;
+}
+
+function waterwayWidthFromType(type){
+  if(['river','canal'].includes(type)) return 8;
+  if(['stream','drain','ditch'].includes(type)) return 3.2;
+  return 5;
 }
 
 async function getElevation(lat, lon){
@@ -2063,6 +2401,7 @@ function initSunShadowWebGl(){
     alpha:false,
     antialias:true,
     depth:true,
+    stencil:true,
     preserveDrawingBuffer:false
   });
   if(!sunShadowGl){
@@ -2110,27 +2449,38 @@ function renderSunShadowScene(result){
 
   const groundTriangles = [];
   const groundColors = [];
+  const mapTriangles = [];
+  const mapColors = [];
+  const mapLines = [];
+  const mapLineColors = [];
   const shadowTriangles = [];
   const shadowColors = [];
+  const shadowMaskTriangles = [];
+  const shadowMaskColors = [];
   const buildingTriangles = [];
   const buildingColors = [];
-  const gridLines = [];
-  const gridColors = [];
   const markerTriangles = [];
   const markerColors = [];
-  const extent = 120;
-  const groundY = -0.10;
-  const gridY = -0.055;
-  const shadowY = -0.004;
+  const extent = 900;
+  // Keep flat layers clearly separated in depth.
+  // The previous version placed the solid ground, OSM map lines, and shadows within a few centimetres,
+  // which can cause z-fighting / shimmering on mobile GPUs.
+  const groundY = -1.40;
+  const mapY = -0.92;
+  const shadowY = -0.12;
 
+  // Do not draw a solid ground quad. The WebGL clear colour already gives a pale floor,
+  // and removing the coplanar ground surface avoids the flashing grey blocks / stripes.
+
+  // Shadow rendering uses a stencil-masked union silhouette so overlapping shadows do not get darker.
   addQuad(
-    groundTriangles, groundColors,
-    [-extent,groundY,-extent], [extent,groundY,-extent],
-    [extent,groundY,extent], [-extent,groundY,extent],
-    [0.96,0.96,0.96,1]
+    shadowMaskTriangles, shadowMaskColors,
+    [-extent,shadowY,-extent], [extent,shadowY,-extent],
+    [extent,shadowY,extent], [-extent,shadowY,extent],
+    [0.44,0.44,0.44,0.40]
   );
 
-  // Ground grid intentionally disabled: shadows are easier to read on a clean floor.
+  drawGroundMapFeatures(mapTriangles,mapColors,mapLines,mapLineColors,result.mapFeatures,mapY);
 
   const buildingShadowLengthFactor = result.hasDirectShadow
     ? 1 / Math.tan(Math.max(result.sunAltitude * Math.PI / 180,0.001))
@@ -2142,14 +2492,50 @@ function renderSunShadowScene(result){
     if(result.hasDirectShadow){
       const buildingShadowLength = Math.min(building.height * buildingShadowLengthFactor,80);
       const polygon = addBuildingShadow(displayBuilding,displayShadowAzimuth,buildingShadowLength);
-      addFlatPolygon(shadowTriangles,shadowColors,polygon,shadowY,[0.58,0.58,0.58,1]);
+      addFlatPolygonGradientByDirection(
+        shadowTriangles,
+        shadowColors,
+        polygon,
+        shadowY,
+        displayShadowAzimuth,
+        [0.44,0.44,0.44,0.42],
+        [0.44,0.44,0.44,0.00]
+      );
     }
-    addBox(
-      buildingTriangles, buildingColors,
-      displayBuilding.x, building.height / 2, displayBuilding.z,
-      building.width, building.height, building.depth,
-      [0.93,0.93,0.93,1],
-      sceneRotation
+    if(Array.isArray(displayBuilding.points) && displayBuilding.points.length >= 3){
+      addFootprintPrism(
+        buildingTriangles, buildingColors,
+        displayBuilding.points,
+        building.height,
+        0,
+        [0.93,0.93,0.93,1]
+      );
+    }else{
+      addBox(
+        buildingTriangles, buildingColors,
+        displayBuilding.x, building.height / 2, displayBuilding.z,
+        building.width, building.height, building.depth,
+        [0.93,0.93,0.93,1],
+        sceneRotation
+      );
+    }
+  }
+
+  const markerRadius = 2.2;
+  const markerHeight = 8;
+  if(result.hasDirectShadow){
+    const markerShadowLength = Math.min(markerHeight * buildingShadowLengthFactor, 70);
+    addCylinderShadowGradient(
+      shadowTriangles,
+      shadowColors,
+      0,
+      0,
+      markerRadius,
+      markerShadowLength,
+      displayShadowAzimuth,
+      shadowY,
+      [0.44,0.44,0.44,0.38],
+      [0.44,0.44,0.44,0.00]
     );
   }
 
@@ -2157,9 +2543,9 @@ function renderSunShadowScene(result){
   // Draw the field-of-view marker first, then the location cylinder above it.
   // This keeps the blue marker at the base without visually cutting through the cylinder.
   addHeadingTriangle(markerTriangles,markerColors,0,0.03,0,headingForMarker,[0.72,0.88,1.00,1]);
-  addLocationCylinder(markerTriangles,markerColors,0,0.12,0,2.2,8,[0.26,0.26,0.26,1]);
+  addLocationCylinder(markerTriangles,markerColors,0,0.12,0,markerRadius,markerHeight,[0.26,0.26,0.26,1]);
 
-  const projection = mat4Perspective(43 * Math.PI / 180, pixelWidth / pixelHeight, 0.1, 900);
+  const projection = mat4Perspective(43 * Math.PI / 180, pixelWidth / pixelHeight, 0.1, 1500);
   const distance = getSunShadowCameraDistance();
   const yawRad = sunShadowCamera.yaw * Math.PI / 180;
   const pitchRad = sunShadowCamera.pitch * Math.PI / 180;
@@ -2174,14 +2560,38 @@ function renderSunShadowScene(result){
 
   gl.viewport(0,0,pixelWidth,pixelHeight);
   gl.clearColor(0.98,0.98,0.98,1);
-  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.clearStencil(0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
   gl.enable(gl.DEPTH_TEST);
   gl.disable(gl.CULL_FACE);
   gl.disable(gl.BLEND);
+  gl.disable(gl.STENCIL_TEST);
   gl.useProgram(sunShadowProgram);
   gl.uniformMatrix4fv(gl.getUniformLocation(sunShadowProgram,'uMatrix'),false,new Float32Array(matrix));
   drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,groundTriangles,groundColors);
+
+  // Draw the flat OSM-style map as a background layer without depth testing.
+  // This avoids road-surface z-fighting at joins and removes the unwanted centre-line shimmer.
+  gl.disable(gl.DEPTH_TEST);
+  gl.disable(gl.BLEND);
+  drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,mapTriangles,mapColors);
+  drawWebGlGeometry(gl,sunShadowProgram,gl.LINES,mapLines,mapLineColors);
+  gl.enable(gl.DEPTH_TEST);
+
+  // Draw gradient shadows directly, but use stencil so every pixel is shaded only once.
+  // This keeps the shadow semi-transparent and fading out, without overlaps becoming darker.
+  gl.enable(gl.STENCIL_TEST);
+  gl.stencilMask(0xFF);
+  gl.depthMask(false);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+  gl.stencilFunc(gl.EQUAL,0,0xFF);
+  gl.stencilOp(gl.KEEP,gl.KEEP,gl.REPLACE);
   drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,shadowTriangles,shadowColors);
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+  gl.disable(gl.STENCIL_TEST);
+
   drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,buildingTriangles,buildingColors);
   gl.disable(gl.DEPTH_TEST);
   gl.enable(gl.BLEND);
@@ -2248,6 +2658,18 @@ function addGradientTriangle(positions, colors, a,b,c,colorA,colorB,colorC){
   colors.push(...normalizeColor(colorA),...normalizeColor(colorB),...normalizeColor(colorC));
 }
 
+function addGroundPolylineLines(positions, colors, points, y, color){
+  if(!points || points.length < 2) return;
+  const rgba = normalizeColor(color);
+  for(let i=0;i<points.length-1;i++){
+    const a = points[i];
+    const b = points[i+1];
+    if(!isFinite(a.x) || !isFinite(a.z) || !isFinite(b.x) || !isFinite(b.z)) continue;
+    positions.push(a.x,y,a.z,b.x,y,b.z);
+    colors.push(...rgba,...rgba);
+  }
+}
+
 function addLocationCylinder(positions,colors,x,y,z,radius,height,color,segments=32){
   const topY = y + height;
   const sideColor = normalizeColor(color);
@@ -2266,12 +2688,30 @@ function addLocationCylinder(positions,colors,x,y,z,radius,height,color,segments
   }
 }
 
+function azimuthToSceneVector(azimuth){
+  const radians = azimuth * Math.PI / 180;
+  return {
+    // East/west is mirrored to match the corrected ground map orientation.
+    x:-Math.sin(radians),
+    z:Math.cos(radians)
+  };
+}
+
+function rightVectorForAzimuth(azimuth){
+  const radians = azimuth * Math.PI / 180;
+  return {
+    x:-Math.cos(radians),
+    z:-Math.sin(radians)
+  };
+}
+
 function addHeadingTriangle(positions,colors,x,y,z,heading,color){
-  const radians = heading * Math.PI / 180;
-  const dirX = Math.sin(radians);
-  const dirZ = Math.cos(radians);
-  const rightX = Math.cos(radians);
-  const rightZ = -Math.sin(radians);
+  const direction = azimuthToSceneVector(heading);
+  const rightVector = rightVectorForAzimuth(heading);
+  const dirX = direction.x;
+  const dirZ = direction.z;
+  const rightX = rightVector.x;
+  const rightZ = rightVector.z;
 
   // Single flat field-of-view marker.
   // The narrow point starts at the location cylinder base, and the wide edge opens outward.
@@ -2286,6 +2726,253 @@ function addHeadingTriangle(positions,colors,x,y,z,heading,color){
   addGradientTriangle(positions,colors,apex,left,right,apexColor,wideColor,wideColor);
 }
 
+function drawGroundMapFeatures(trianglePositions,triangleColors,linePositions,lineColors,mapFeatures,y){
+  if(!mapFeatures) return;
+  const fillY = y;
+  const lineY = y + 0.035;
+
+  // Draw water and coastline first, underneath roads and building footprints.
+  // Prefer closed OSM water multipolygons. If no large water polygon is available,
+  // fall back to an inferred ocean fill from nearby coastline segments.
+  const hasLargeWaterArea = (mapFeatures.waterAreas || []).some(area => Number(area.area) > 20000);
+  if(!hasLargeWaterArea){
+    for(const coastline of mapFeatures.coastlines || []){
+      const points = (coastline.points || []).filter(point => isFinite(point.x) && isFinite(point.z));
+      if(points.length >= 2){
+        addInferredOceanFromCoastline(trianglePositions,triangleColors,points,fillY - 0.065,6500,[0.80,0.82,0.83,0.92]);
+      }
+    }
+  }
+  for(const area of mapFeatures.waterAreas || []){
+    const points = cleanMapPolygonPoints(area.points || []);
+    if(points.length >= 3){
+      const largeWater = Number(area.area) > 20000;
+      addFlatMapPolygon(
+        trianglePositions,
+        triangleColors,
+        points,
+        fillY - 0.05,
+        largeWater ? [0.80,0.82,0.83,0.95] : [0.88,0.93,0.96,0.85]
+      );
+      addGroundPolylineLines(linePositions,lineColors,[...points,points[0]],lineY + 0.005,[0.54,0.64,0.70,1]);
+    }
+  }
+  for(const waterway of mapFeatures.waterways || []){
+    const points = (waterway.points || []).filter(point => isFinite(point.x) && isFinite(point.z));
+    if(points.length >= 2){
+      addFlatPolyline(
+        trianglePositions,
+        triangleColors,
+        points,
+        fillY - 0.015,
+        Math.max(Number(waterway.width) || 4, 2.2),
+        [0.91,0.965,0.995,1]
+      );
+      addGroundPolylineLines(linePositions,lineColors,points,lineY + 0.01,[0.64,0.76,0.86,1]);
+    }
+  }
+  for(const coastline of mapFeatures.coastlines || []){
+    const points = (coastline.points || []).filter(point => isFinite(point.x) && isFinite(point.z));
+    if(points.length >= 2){
+      addFlatPolyline(trianglePositions,triangleColors,points,fillY - 0.005,11.0,[0.74,0.78,0.80,1]);
+      addGroundPolylineLines(linePositions,lineColors,points,lineY + 0.02,[0.32,0.40,0.45,1]);
+    }
+  }
+
+  // Draw roads as pale ribbons rather than single centre lines.
+  // This is closer to the Leaflet / OSM radar-map base layer and makes street positions easier to read.
+  for(const road of mapFeatures.roads || []){
+    const points = (road.points || []).filter(point => isFinite(point.x) && isFinite(point.z));
+    if(points.length >= 2){
+      const width = Math.max(Number(road.width) || 2.6, 1.4);
+      const majorRoad = width >= 5;
+      const ribbonWidth = majorRoad ? width * 2.1 : width * 1.75;
+      addFlatPolyline(
+        trianglePositions,
+        triangleColors,
+        points,
+        fillY,
+        ribbonWidth,
+        majorRoad ? [0.90,0.90,0.89,1] : [0.935,0.935,0.925,1]
+      );
+    }
+  }
+
+  // Use the real OSM building polygon footprint for the ground map, not just a rectangle.
+  // Keep it very light so it gives location context without fighting with shadow visibility.
+  for(const footprint of mapFeatures.buildingFootprints || []){
+    const points = cleanMapPolygonPoints(footprint.points || []);
+    if(points.length >= 3){
+      addFlatMapPolygon(trianglePositions,triangleColors,points,fillY + 0.01,[0.90,0.90,0.90,0.38]);
+      const closed = [...points, points[0]];
+      addGroundPolylineLines(linePositions,lineColors,closed,lineY + 0.015,[0.74,0.74,0.74,1]);
+    }
+  }
+}
+
+function addFlatMapPolygon(positions,colors,points,y,color){
+  if(!points || points.length < 3) return;
+  const centre = points.reduce((sum,point) => ({x:sum.x + point.x, z:sum.z + point.z}), {x:0,z:0});
+  centre.x /= points.length;
+  centre.z /= points.length;
+  const rgba = normalizeColor(color);
+  for(let i=0;i<points.length;i++){
+    const a = points[i];
+    const b = points[(i+1) % points.length];
+    positions.push(centre.x,y,centre.z,a.x,y,a.z,b.x,y,b.z);
+    colors.push(...rgba,...rgba,...rgba);
+  }
+}
+
+function addInferredOceanFromCoastline(positions,colors,points,y,extendDistance,color){
+  const cleanPoints = (points || []).filter(point => isFinite(point.x) && isFinite(point.z));
+  if(cleanPoints.length < 2) return;
+  const rgba = normalizeColor(color);
+  const extension = Math.max(Number(extendDistance) || 1000, 300);
+
+  for(let i=0;i<cleanPoints.length-1;i++){
+    const a = cleanPoints[i];
+    const b = cleanPoints[i+1];
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const len = Math.hypot(dx,dz);
+    if(len < 0.5) continue;
+
+    let nx = -dz / len;
+    let nz = dx / len;
+    const midX = (a.x + b.x) / 2;
+    const midZ = (a.z + b.z) / 2;
+
+    // The simulator is centred on the user. For local coastal views, the land side is usually
+    // the side facing the user; the sea side is the opposite direction. Choose the normal that
+    // points away from the centre, then fill that side as ocean.
+    if(nx * midX + nz * midZ < 0){
+      nx = -nx;
+      nz = -nz;
+    }
+
+    const aFar = {x:a.x + nx * extension, z:a.z + nz * extension};
+    const bFar = {x:b.x + nx * extension, z:b.z + nz * extension};
+    positions.push(
+      a.x,y,a.z,
+      b.x,y,b.z,
+      bFar.x,y,bFar.z,
+      a.x,y,a.z,
+      bFar.x,y,bFar.z,
+      aFar.x,y,aFar.z
+    );
+    colors.push(...rgba,...rgba,...rgba,...rgba,...rgba,...rgba);
+  }
+}
+
+function addFlatPolyline(positions,colors,points,y,width,color){
+  const halfWidth = Math.max(Number(width) || 1, 0.5) / 2;
+  const cleanPoints = (points || []).filter(point => isFinite(point.x) && isFinite(point.z));
+  if(cleanPoints.length < 2) return;
+
+  // Segment rectangles give the road its width; discs at vertices create rounded joins/caps.
+  // This prevents gaps and broken-looking road ribbons when the polyline bends.
+  for(let i=0;i<cleanPoints.length-1;i++){
+    const a = cleanPoints[i];
+    const b = cleanPoints[i+1];
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const len = Math.hypot(dx,dz);
+    if(len < 0.01) continue;
+    const nx = -dz / len * halfWidth;
+    const nz = dx / len * halfWidth;
+    const p0 = [a.x + nx,y,a.z + nz];
+    const p1 = [a.x - nx,y,a.z - nz];
+    const p2 = [b.x - nx,y,b.z - nz];
+    const p3 = [b.x + nx,y,b.z + nz];
+    addQuad(positions,colors,p0,p1,p2,p3,color);
+  }
+  for(const point of cleanPoints){
+    addFlatDisc(positions,colors,point.x,y,point.z,halfWidth,color,18);
+  }
+}
+
+function addFlatDisc(positions,colors,x,y,z,radius,color,segments=18){
+  const rgba = normalizeColor(color);
+  const safeRadius = Math.max(Number(radius) || 0,0.1);
+  for(let i=0;i<segments;i++){
+    const a0 = i / segments * Math.PI * 2;
+    const a1 = (i + 1) / segments * Math.PI * 2;
+    positions.push(
+      x,y,z,
+      x + Math.cos(a0) * safeRadius,y,z + Math.sin(a0) * safeRadius,
+      x + Math.cos(a1) * safeRadius,y,z + Math.sin(a1) * safeRadius
+    );
+    colors.push(...rgba,...rgba,...rgba);
+  }
+}
+
+
+function addFlatPolygonGradientByDirection(positions,colors,points,y,shadowAzimuth,nearColor,farColor){
+  if(!points || points.length < 3) return;
+  const shadowDirection = azimuthToSceneVector(shadowAzimuth);
+  let minProjection = Infinity;
+  let maxProjection = -Infinity;
+  for(const point of points){
+    const projection = point.x * shadowDirection.x + point.z * shadowDirection.z;
+    minProjection = Math.min(minProjection, projection);
+    maxProjection = Math.max(maxProjection, projection);
+  }
+  const span = Math.max(maxProjection - minProjection, 0.001);
+  const nearRgba = normalizeColor(nearColor);
+  const farRgba = normalizeColor(farColor);
+  const vertexColor = point => {
+    const projection = point.x * shadowDirection.x + point.z * shadowDirection.z;
+    const t = clamp((projection - minProjection) / span, 0, 1);
+    const fade = 1 - t;
+    return [
+      nearRgba[0] + (farRgba[0] - nearRgba[0]) * t,
+      nearRgba[1] + (farRgba[1] - nearRgba[1]) * t,
+      nearRgba[2] + (farRgba[2] - nearRgba[2]) * t,
+      farRgba[3] + (nearRgba[3] - farRgba[3]) * fade * fade
+    ];
+  };
+  for(let i=1;i<points.length-1;i++){
+    const a = points[0];
+    const b = points[i];
+    const c = points[i+1];
+    positions.push(a.x,y,a.z,b.x,y,b.z,c.x,y,c.z);
+    colors.push(...vertexColor(a),...vertexColor(b),...vertexColor(c));
+  }
+}
+
+function addCylinderShadowGradient(positions,colors,x,z,radius,shadowLength,shadowAzimuth,y,nearColor,farColor){
+  const segments = 28;
+  const shadowDirection = azimuthToSceneVector(shadowAzimuth);
+  const offsetX = shadowDirection.x * shadowLength;
+  const offsetZ = shadowDirection.z * shadowLength;
+  const points = [];
+  for(let i=0;i<segments;i++){
+    const angle = i / segments * Math.PI * 2;
+    const px = x + Math.cos(angle) * radius;
+    const pz = z + Math.sin(angle) * radius;
+    points.push({x:px,z:pz});
+    points.push({x:px + offsetX,z:pz + offsetZ});
+  }
+  addFlatPolygonGradientByDirection(positions,colors,convexHull(points),y,shadowAzimuth,nearColor,farColor);
+}
+
+function addCylinderShadow(positions,colors,x,z,radius,shadowLength,shadowAzimuth,y,color){
+  const segments = 28;
+  const shadowDirection = azimuthToSceneVector(shadowAzimuth);
+  const offsetX = shadowDirection.x * shadowLength;
+  const offsetZ = shadowDirection.z * shadowLength;
+  const points = [];
+  for(let i=0;i<segments;i++){
+    const angle = i / segments * Math.PI * 2;
+    const px = x + Math.cos(angle) * radius;
+    const pz = z + Math.sin(angle) * radius;
+    points.push({x:px,z:pz});
+    points.push({x:px + offsetX,z:pz + offsetZ});
+  }
+  addFlatPolygon(positions,colors,convexHull(points),y,color);
+}
+
 function addLine(positions, colors, start, end, color){
   positions.push(...start,...end);
   const rgba = normalizeColor(color);
@@ -2293,21 +2980,26 @@ function addLine(positions, colors, start, end, color){
 }
 
 function addBuildingShadow(building, shadowAzimuth, shadowLength){
-  const angle = (building.rotation || 0) * Math.PI / 180;
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
-  const corners = [
-    [-building.width/2,-building.depth/2],
-    [building.width/2,-building.depth/2],
-    [building.width/2,building.depth/2],
-    [-building.width/2,building.depth/2]
-  ].map(([x,z]) => ({
-    x:building.x + x*cos + z*sin,
-    z:building.z - x*sin + z*cos
-  }));
-  const shadowRadians = shadowAzimuth * Math.PI / 180;
-  const offsetX = Math.sin(shadowRadians) * shadowLength;
-  const offsetZ = Math.cos(shadowRadians) * shadowLength;
+  let corners;
+  if(Array.isArray(building.points) && building.points.length >= 3){
+    corners = cleanMapPolygonPoints(building.points);
+  }else{
+    const angle = (building.rotation || 0) * Math.PI / 180;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    corners = [
+      [-building.width/2,-building.depth/2],
+      [building.width/2,-building.depth/2],
+      [building.width/2,building.depth/2],
+      [-building.width/2,building.depth/2]
+    ].map(([x,z]) => ({
+      x:building.x + x*cos + z*sin,
+      z:building.z - x*sin + z*cos
+    }));
+  }
+  const shadowDirection = azimuthToSceneVector(shadowAzimuth);
+  const offsetX = shadowDirection.x * shadowLength;
+  const offsetZ = shadowDirection.z * shadowLength;
   return convexHull([
     ...corners,
     ...corners.map(point => ({x:point.x+offsetX,z:point.z+offsetZ}))
@@ -2372,6 +3064,33 @@ function shadeColor(color, shade){
     clamp(rgba[2] * shade, 0, 1),
     rgba[3]
   ];
+}
+
+function addFootprintPrism(positions,colors,points,height,baseY,color){
+  const polygon = cleanMapPolygonPoints(points);
+  if(!polygon || polygon.length < 3) return;
+  const topY = baseY + height;
+  const baseColor = normalizeColor(color);
+
+  // Side walls follow the real OSM footprint. Each edge gets a slightly different grey value
+  // so the building remains readable without becoming too dark.
+  for(let i=0;i<polygon.length;i++){
+    const a = polygon[i];
+    const b = polygon[(i + 1) % polygon.length];
+    const angle = Math.atan2(b.z - a.z, b.x - a.x);
+    const shade = 0.86 + 0.10 * ((Math.sin(angle) + 1) / 2);
+    addQuad(
+      positions,
+      colors,
+      [a.x,baseY,a.z],
+      [b.x,baseY,b.z],
+      [b.x,topY,b.z],
+      [a.x,topY,a.z],
+      shadeColor(baseColor,shade)
+    );
+  }
+
+  addFlatPolygon(positions,colors,polygon,topY,shadeColor(baseColor,1.03));
 }
 
 function addBox(positions, colors, x,y,z,width,height,depth,color,rotation=0){
