@@ -303,7 +303,7 @@
       overflow:hidden;
       border:1px solid var(--border);
       border-radius:12px;
-      background:linear-gradient(180deg,#adadad 0%,#c7c7c7 38%,#e2e2df 70%,#f0f0ec 100%);
+      background:linear-gradient(180deg,#cfcfcf 0%,#e7e7e7 26%,#ffffff 48%,#fbfbf8 100%);
     }
     #sunShadowCanvas{
       display:block;
@@ -2357,16 +2357,30 @@ function initSunShadowWebGl(){
     attribute vec4 aColor;
     uniform mat4 uMatrix;
     varying vec4 vColor;
+    varying vec3 vWorldPosition;
     void main(){
       gl_Position = uMatrix * vec4(aPosition, 1.0);
       vColor = aColor;
+      vWorldPosition = aPosition;
     }
   `;
   const fragmentSource = `
     precision mediump float;
     varying vec4 vColor;
+    varying vec3 vWorldPosition;
+    uniform float uFogEnabled;
+    uniform vec2 uFogOrigin;
+    uniform float uFogNear;
+    uniform float uFogFar;
+    uniform vec3 uFogColor;
     void main(){
-      gl_FragColor = vColor;
+      vec3 rgb = vColor.rgb;
+      if(uFogEnabled > 0.5){
+        float distanceFromMarker = distance(vWorldPosition.xz, uFogOrigin);
+        float fogAmount = smoothstep(uFogNear, uFogFar, distanceFromMarker);
+        rgb = mix(rgb, uFogColor, fogAmount);
+      }
+      gl_FragColor = vec4(rgb, vColor.a);
     }
   `;
   sunShadowProgram = createWebGlProgram(sunShadowGl, vertexSource, fragmentSource);
@@ -2404,6 +2418,10 @@ function renderSunShadowScene(result){
   const buildingColors = [];
   const markerTriangles = [];
   const markerColors = [];
+  const headingTriangles = [];
+  const headingColors = [];
+  const glowTriangles = [];
+  const glowColors = [];
   const extent = 3600;
   // Keep flat layers clearly separated in depth.
   // The previous version placed the solid ground, OSM map lines, and shadows within a few centimetres,
@@ -2419,7 +2437,7 @@ function renderSunShadowScene(result){
     groundTriangles, groundColors,
     [-extent,groundY,-extent], [extent,groundY,-extent],
     [extent,groundY,extent], [-extent,groundY,extent],
-    [0.89,0.89,0.86,1]
+    [0.93,0.94,0.95,1]
   );
 
   // Shadow rendering uses a stencil-masked union silhouette so overlapping shadows do not get darker.
@@ -2442,14 +2460,15 @@ function renderSunShadowScene(result){
     if(result.hasDirectShadow){
       const buildingShadowLength = Math.min(building.height * buildingShadowLengthFactor,80);
       const polygon = addBuildingShadow(displayBuilding,displayShadowAzimuth,buildingShadowLength);
-      addFlatPolygonGradientByDirection(
+      addSoftFlatPolygonGradientByDirection(
         shadowTriangles,
         shadowColors,
         polygon,
         shadowY,
         displayShadowAzimuth,
-        [0.24,0.24,0.24,1.2],
-        [0.24,0.24,0.24,0.05]
+        [0.24,0.24,0.24,0.5],
+        [0.24,0.24,0.24,0.01],
+        8
       );
     }
     if(Array.isArray(displayBuilding.points) && displayBuilding.points.length >= 3){
@@ -2494,10 +2513,11 @@ function renderSunShadowScene(result){
   }
 
   const headingForMarker = Number.isFinite(result.phoneHeading) ? result.phoneHeading : 0;
-  // Draw the field-of-view marker first, then the location cylinder above it.
-  // This keeps the blue marker at the base without visually cutting through the cylinder.
-  addHeadingTriangle(markerTriangles,markerColors,userX,0.03,userZ,headingForMarker,[0.72,0.88,1.00,1]);
-  addLocationCylinder(markerTriangles,markerColors,userX,0.12,userZ,markerRadius,markerHeight,[0.26,0.26,0.26,1]);
+  addHeadingTriangle(headingTriangles,headingColors,userX,0.08,userZ,headingForMarker,[0.05,0.62,1.00,1]);
+  addGlowSphere(glowTriangles,glowColors,userX,markerHeight * 0.52,userZ,8.5,[0.10,0.58,1.00],0.20);
+  addGlowSphere(glowTriangles,glowColors,userX,markerHeight + 5.0,userZ,6.8,[0.10,0.58,1.00],0.18);
+  addLocationCylinder(markerTriangles,markerColors,userX,0.12,userZ,markerRadius,markerHeight,[0.08,0.42,0.82,1]);
+  addSphere(markerTriangles,markerColors,userX,markerHeight + 5.0,userZ,2.45,[0.08,0.42,0.82,1],18,10);
   addSunPositionMarker(markerTriangles,markerColors,result.sunAzimuth,result.sunAltitude,userX,userZ);
 
   const projection = mat4Perspective(43 * Math.PI / 180, pixelWidth / pixelHeight, 0.1, 6200);
@@ -2523,12 +2543,14 @@ function renderSunShadowScene(result){
   gl.disable(gl.STENCIL_TEST);
   gl.useProgram(sunShadowProgram);
   gl.uniformMatrix4fv(gl.getUniformLocation(sunShadowProgram,'uMatrix'),false,new Float32Array(matrix));
+  setSunShadowFog(gl,false);
   drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,groundTriangles,groundColors);
 
   // Draw the flat OSM-style map as a background layer without depth testing.
   // This avoids road-surface z-fighting at joins and removes the unwanted centre-line shimmer.
   gl.disable(gl.DEPTH_TEST);
   gl.disable(gl.BLEND);
+  setSunShadowFog(gl,true,{x:userX,z:userZ},120,560,[0.97,0.98,0.98]);
   drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,mapTriangles,mapColors);
   drawWebGlGeometry(gl,sunShadowProgram,gl.LINES,mapLines,mapLineColors);
   gl.enable(gl.DEPTH_TEST);
@@ -2540,18 +2562,25 @@ function renderSunShadowScene(result){
   gl.stencilMask(0xFF);
   gl.depthMask(false);
   gl.enable(gl.BLEND);
-  gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+  gl.blendFunc(gl.ZERO,gl.SRC_COLOR);
   gl.stencilFunc(gl.EQUAL,0,0xFF);
   gl.stencilOp(gl.KEEP,gl.KEEP,gl.REPLACE);
+  setSunShadowFog(gl,true,{x:userX,z:userZ},120,560,[0.97,0.98,0.98]);
   drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,shadowTriangles,shadowColors);
   gl.depthMask(true);
   gl.disable(gl.BLEND);
   gl.disable(gl.STENCIL_TEST);
   gl.enable(gl.DEPTH_TEST);
 
+  setSunShadowFog(gl,true,{x:userX,z:userZ},120,560,[0.97,0.98,0.98]);
   drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,buildingTriangles,buildingColors);
   gl.disable(gl.DEPTH_TEST);
   gl.enable(gl.BLEND);
+  setSunShadowFog(gl,false);
+  gl.blendFunc(gl.SRC_ALPHA,gl.ONE);
+  drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,headingTriangles,headingColors);
+  gl.blendFunc(gl.SRC_ALPHA,gl.ONE);
+  drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,glowTriangles,glowColors);
   gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
   drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,markerTriangles,markerColors);
   gl.disable(gl.BLEND);
@@ -2604,6 +2633,15 @@ function drawWebGlGeometry(gl, program, mode, positions, colors){
   gl.deleteBuffer(colorBuffer);
 }
 
+function setSunShadowFog(gl, enabled, origin={x:0,z:0}, near=230, far=820, color=[0.97,0.98,0.98]){
+  if(!sunShadowProgram) return;
+  gl.uniform1f(gl.getUniformLocation(sunShadowProgram,'uFogEnabled'), enabled ? 1 : 0);
+  gl.uniform2f(gl.getUniformLocation(sunShadowProgram,'uFogOrigin'), origin.x || 0, origin.z || 0);
+  gl.uniform1f(gl.getUniformLocation(sunShadowProgram,'uFogNear'), near);
+  gl.uniform1f(gl.getUniformLocation(sunShadowProgram,'uFogFar'), far);
+  gl.uniform3f(gl.getUniformLocation(sunShadowProgram,'uFogColor'), color[0], color[1], color[2]);
+}
+
 function addTriangle(positions, colors, a,b,c,color){
   positions.push(...a,...b,...c);
   const rgba = normalizeColor(color);
@@ -2649,7 +2687,7 @@ function addSunPositionMarker(positions,colors,sunAzimuth,sunAltitude,originX=0,
   if(!Number.isFinite(sunAzimuth) || !Number.isFinite(sunAltitude)) return;
   // Hide the sun marker when the sun is at or below the horizon.
   if(sunAltitude <= 0) return;
-  const sunAlpha = smoothstep(0,4,sunAltitude);
+  const sunAlpha = smoothstep(0,8,sunAltitude);
   if(sunAlpha <= 0) return;
   // Place a small white sphere in the sun's compass direction and approximate altitude.
   // It is drawn with the marker overlay pass so it stays visible as a clear position indicator.
@@ -2661,6 +2699,26 @@ function addSunPositionMarker(positions,colors,sunAzimuth,sunAltitude,originX=0,
   const x = originX + direction.x * horizontalDistance;
   const z = originZ + direction.z * horizontalDistance;
   addSphere(positions,colors,x,y,z,70,[1,1,1,0.96 * sunAlpha],28,14);
+}
+
+function addGlowSphere(positions,colors,x,y,z,radius,color,alpha){
+  const rgb = normalizeColor(color);
+  const layers = [
+    {scale:1.00, alpha:alpha * 0.20},
+    {scale:0.72, alpha:alpha * 0.42},
+    {scale:0.46, alpha:alpha * 0.72}
+  ];
+  for(const layer of layers){
+    addSphere(
+      positions,
+      colors,
+      x,y,z,
+      radius * layer.scale,
+      [rgb[0],rgb[1],rgb[2],layer.alpha],
+      22,
+      12
+    );
+  }
 }
 
 function smoothstep(edge0, edge1, value){
@@ -2723,8 +2781,8 @@ function addHeadingTriangle(positions,colors,x,y,z,heading,color){
   const left = [x + dirX * 18 - rightX * 8, y, z + dirZ * 18 - rightZ * 8];
   const right = [x + dirX * 18 + rightX * 8, y, z + dirZ * 18 + rightZ * 8];
   const rgba = normalizeColor(color);
-  const apexColor = [rgba[0],rgba[1],rgba[2],0.46];
-  const wideColor = [rgba[0],rgba[1],rgba[2],0.00];
+  const apexColor = [rgba[0],rgba[1],rgba[2],0.72];
+  const wideColor = [rgba[0],rgba[1],rgba[2],0.10];
 
   addGradientTriangle(positions,colors,apex,left,right,apexColor,wideColor,wideColor);
 }
@@ -2853,8 +2911,66 @@ function addFlatDisc(positions,colors,x,y,z,radius,color,segments=18){
 
 
 function addFlatPolygonGradientByDirection(positions,colors,points,y,shadowAzimuth,nearColor,farColor){
-  if(!points || points.length < 3) return;
+  const polygon = cleanMapPolygonPoints(points);
+  if(!polygon || polygon.length < 3) return;
   const shadowDirection = azimuthToSceneVector(shadowAzimuth);
+  const vertexColor = createShadowGradientColorFn(polygon,shadowDirection,nearColor,farColor);
+  for(let i=1;i<polygon.length-1;i++){
+    const a = polygon[0];
+    const b = polygon[i];
+    const c = polygon[i+1];
+    positions.push(a.x,y,a.z,b.x,y,b.z,c.x,y,c.z);
+    colors.push(...vertexColor(a),...vertexColor(b),...vertexColor(c));
+  }
+}
+
+function addSoftFlatPolygonGradientByDirection(positions,colors,points,y,shadowAzimuth,nearColor,farColor,feather=6){
+  const polygon = cleanMapPolygonPoints(points);
+  if(!polygon || polygon.length < 3) return;
+  const shadowDirection = azimuthToSceneVector(shadowAzimuth);
+  const vertexColor = createShadowGradientColorFn(polygon,shadowDirection,nearColor,farColor);
+
+  for(let i=1;i<polygon.length-1;i++){
+    const a = polygon[0];
+    const b = polygon[i];
+    const c = polygon[i+1];
+    positions.push(a.x,y,a.z,b.x,y,b.z,c.x,y,c.z);
+    colors.push(...vertexColor(a),...vertexColor(b),...vertexColor(c));
+  }
+
+  const centroid = polygon.reduce((sum,point)=>({x:sum.x + point.x,z:sum.z + point.z}),{x:0,z:0});
+  centroid.x /= polygon.length;
+  centroid.z /= polygon.length;
+  const expanded = polygon.map(point => {
+    const dx = point.x - centroid.x;
+    const dz = point.z - centroid.z;
+    const length = Math.max(Math.hypot(dx,dz),0.001);
+    const extra = Math.max(feather,0);
+    return {x:point.x + dx / length * extra,z:point.z + dz / length * extra};
+  });
+  const clearColor = [1,1,1,1];
+  for(let i=0;i<polygon.length;i++){
+    const next = (i + 1) % polygon.length;
+    const innerA = polygon[i];
+    const innerB = polygon[next];
+    const outerB = expanded[next];
+    const outerA = expanded[i];
+    positions.push(
+      innerA.x,y,innerA.z,
+      innerB.x,y,innerB.z,
+      outerB.x,y,outerB.z,
+      innerA.x,y,innerA.z,
+      outerB.x,y,outerB.z,
+      outerA.x,y,outerA.z
+    );
+    colors.push(
+      ...vertexColor(innerA),...vertexColor(innerB),...clearColor,
+      ...vertexColor(innerA),...clearColor,...clearColor
+    );
+  }
+}
+
+function createShadowGradientColorFn(points,shadowDirection,nearColor,farColor){
   let minProjection = Infinity;
   let maxProjection = -Infinity;
   for(const point of points){
@@ -2865,24 +2981,14 @@ function addFlatPolygonGradientByDirection(positions,colors,points,y,shadowAzimu
   const span = Math.max(maxProjection - minProjection, 0.001);
   const nearRgba = normalizeColor(nearColor);
   const farRgba = normalizeColor(farColor);
-  const vertexColor = point => {
+  return point => {
     const projection = point.x * shadowDirection.x + point.z * shadowDirection.z;
     const t = clamp((projection - minProjection) / span, 0, 1);
-    const fade = 1 - t;
-    return [
-      nearRgba[0] + (farRgba[0] - nearRgba[0]) * t,
-      nearRgba[1] + (farRgba[1] - nearRgba[1]) * t,
-      nearRgba[2] + (farRgba[2] - nearRgba[2]) * t,
-      farRgba[3] + (nearRgba[3] - farRgba[3]) * fade * fade
-    ];
+    const fadeT = t <= 0.3 ? 0 : smoothstep(0,1,(t - 0.3) / 0.7);
+    const shadowAlpha = nearRgba[3] + (farRgba[3] - nearRgba[3]) * fadeT;
+    const multiply = 1 - clamp(shadowAlpha,0,0.95);
+    return [multiply,multiply,multiply,1];
   };
-  for(let i=1;i<points.length-1;i++){
-    const a = points[0];
-    const b = points[i];
-    const c = points[i+1];
-    positions.push(a.x,y,a.z,b.x,y,b.z,c.x,y,c.z);
-    colors.push(...vertexColor(a),...vertexColor(b),...vertexColor(c));
-  }
 }
 
 function addCylinderShadowGradient(positions,colors,x,z,radius,shadowLength,shadowAzimuth,y,nearColor,farColor){
@@ -2898,7 +3004,7 @@ function addCylinderShadowGradient(positions,colors,x,z,radius,shadowLength,shad
     points.push({x:px,z:pz});
     points.push({x:px + offsetX,z:pz + offsetZ});
   }
-  addFlatPolygonGradientByDirection(positions,colors,convexHull(points),y,shadowAzimuth,nearColor,farColor);
+  addSoftFlatPolygonGradientByDirection(positions,colors,convexHull(points),y,shadowAzimuth,nearColor,farColor,5);
 }
 
 function addCylinderShadow(positions,colors,x,z,radius,shadowLength,shadowAzimuth,y,color){
