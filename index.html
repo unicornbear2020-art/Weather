@@ -303,7 +303,7 @@
       overflow:hidden;
       border:1px solid var(--border);
       border-radius:12px;
-      background:linear-gradient(180deg,#6b6b6b 0%,#858585 44%,#d9d9d9 100%);
+      background:linear-gradient(180deg,#555555 0%,#7a7a7a 42%,#cfcfcf 72%,#eeeeee 100%);
     }
     #sunShadowCanvas{
       display:block;
@@ -2404,7 +2404,7 @@ function renderSunShadowScene(result){
   const buildingColors = [];
   const markerTriangles = [];
   const markerColors = [];
-  const extent = 1500;
+  const extent = 3600;
   // Keep flat layers clearly separated in depth.
   // The previous version placed the solid ground, OSM map lines, and shadows within a few centimetres,
   // which can cause z-fighting / shimmering on mobile GPUs.
@@ -2419,7 +2419,7 @@ function renderSunShadowScene(result){
     groundTriangles, groundColors,
     [-extent,groundY,-extent], [extent,groundY,-extent],
     [extent,groundY,extent], [-extent,groundY,extent],
-    [0.86,0.86,0.84,1]
+    [0.84,0.84,0.82,1]
   );
 
   // Shadow rendering uses a stencil-masked union silhouette so overlapping shadows do not get darker.
@@ -2448,8 +2448,8 @@ function renderSunShadowScene(result){
         polygon,
         shadowY,
         displayShadowAzimuth,
-        [0.44,0.44,0.44,0.42],
-        [0.44,0.44,0.44,0.00]
+        [0.30,0.30,0.30,0.58],
+        [0.30,0.30,0.30,0.08]
       );
     }
     if(Array.isArray(displayBuilding.points) && displayBuilding.points.length >= 3){
@@ -2488,8 +2488,8 @@ function renderSunShadowScene(result){
       markerShadowLength,
       displayShadowAzimuth,
       shadowY,
-      [0.44,0.44,0.44,0.38],
-      [0.44,0.44,0.44,0.00]
+      [0.30,0.30,0.30,0.54],
+      [0.30,0.30,0.30,0.08]
     );
   }
 
