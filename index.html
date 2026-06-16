@@ -303,7 +303,7 @@
       overflow:hidden;
       border:1px solid var(--border);
       border-radius:12px;
-      background:#fafafa;
+      background:#e8e8e8;
     }
     #sunShadowCanvas{
       display:block;
@@ -717,7 +717,7 @@ let sunShadowFetchSequence = 0;
 let liveLocationWatchId = null;
 let liveLocationLast = null;
 const LIVE_LOCATION_MIN_MOVE_M = 3;
-const SUN_SHADOW_CONTEXT_REFRESH_M = 120;
+const SUN_SHADOW_CONTEXT_REFRESH_M = 450;
 let sunShadowGl = null;
 let sunShadowProgram = null;
 let sunShadowOrientationMode = 'phone';
@@ -1704,6 +1704,14 @@ function updateSunShadowSimulator(loc, options={}){
     ? distanceMeters(sunShadowContextOrigin, normalizedLocation)
     : Infinity;
   const shouldRefreshContext = !sunShadowContextOrigin || contextMove >= SUN_SHADOW_CONTEXT_REFRESH_M;
+  const userOffset = getSunShadowUserOffset(normalizedLocation);
+  console.info('[SunShadow] location update', {
+    sunShadowContextOrigin,
+    currentLocation: normalizedLocation,
+    userOffset,
+    contextMove: Number.isFinite(contextMove) ? Math.round(contextMove) : null,
+    loadedBuildings: sunShadowBuildings.length
+  });
 
   if(shouldRefreshContext){
     if(!sunShadowContextOrigin){
@@ -1766,6 +1774,8 @@ function renderCurrentSunShadow(){
   const result = calculateSunShadow(selectedDate, selectedLocation.lat, selectedLocation.lon);
   result.location = selectedLocation;
   result.timezone = tz;
+  result.contextOrigin = sunShadowContextOrigin;
+  result.userOffset = getSunShadowUserOffset(selectedLocation);
   result.buildings = getSunShadowBuildingsForLocation(selectedLocation);
   result.mapFeatures = getSunShadowMapFeaturesForLocation(selectedLocation);
   result.elevation = sunShadowElevation;
@@ -1942,45 +1952,18 @@ function updateCompassOverlay(){
 }
 
 function getSunShadowBuildingsForLocation(loc){
-  if(!sunShadowContextOrigin || !Array.isArray(sunShadowBuildings) || !sunShadowBuildings.length){
-    return sunShadowBuildings;
-  }
-  const offset = localMetreOffset(sunShadowContextOrigin, loc);
-  return sunShadowBuildings.map(building => ({
-    ...building,
-    x:building.x - offset.x,
-    z:building.z - offset.z,
-    distance:Math.hypot(building.x - offset.x, building.z - offset.z)
-  }));
+  return Array.isArray(sunShadowBuildings) ? sunShadowBuildings : [];
 }
 
 function getSunShadowMapFeaturesForLocation(loc){
   const empty = { roads:[], buildingFootprints:[], coastlines:[], waterAreas:[], waterways:[] };
-  if(!sunShadowContextOrigin || !sunShadowMapFeatures) return sunShadowMapFeatures || empty;
-  const offset = localMetreOffset(sunShadowContextOrigin, loc);
-  const shiftPoint = point => ({ x:point.x - offset.x, z:point.z - offset.z });
-  return {
-    roads:(sunShadowMapFeatures.roads || []).map(road => ({
-      ...road,
-      points:(road.points || []).map(shiftPoint)
-    })),
-    buildingFootprints:(sunShadowMapFeatures.buildingFootprints || []).map(footprint => ({
-      ...footprint,
-      points:(footprint.points || []).map(shiftPoint)
-    })),
-    coastlines:(sunShadowMapFeatures.coastlines || []).map(line => ({
-      ...line,
-      points:(line.points || []).map(shiftPoint)
-    })),
-    waterAreas:(sunShadowMapFeatures.waterAreas || []).map(area => ({
-      ...area,
-      points:(area.points || []).map(shiftPoint)
-    })),
-    waterways:(sunShadowMapFeatures.waterways || []).map(waterway => ({
-      ...waterway,
-      points:(waterway.points || []).map(shiftPoint)
-    }))
-  };
+  return sunShadowMapFeatures || empty;
+}
+
+function getSunShadowUserOffset(loc){
+  return sunShadowContextOrigin
+    ? localMetreOffset(sunShadowContextOrigin, loc)
+    : {x:0,z:0};
 }
 
 function localMetreOffset(fromLoc, toLoc){
@@ -2036,6 +2019,9 @@ async function loadSunShadowMapContext(loc){
   const mapData = mapResult.status === 'fulfilled'
     ? mapResult.value
     : { buildings:[], roads:[], buildingFootprints:[], coastlines:[], waterAreas:[], waterways:[] };
+  if(mapResult.status !== 'fulfilled'){
+    console.warn('[SunShadow] OSM context unavailable', mapResult.reason);
+  }
   sunShadowBuildings = mapData.buildings || [];
   sunShadowMapFeatures = {
     roads:mapData.roads || [],
@@ -2045,6 +2031,16 @@ async function loadSunShadowMapContext(loc){
     waterways:mapData.waterways || []
   };
   sunShadowElevation = elevationResult.status === 'fulfilled' ? elevationResult.value : null;
+  console.info('[SunShadow] OSM context loaded', {
+    sunShadowContextOrigin,
+    currentLocation: loc,
+    userOffset: localMetreOffset(sunShadowContextOrigin, loc),
+    loadedBuildings: sunShadowBuildings.length,
+    roads: sunShadowMapFeatures.roads.length,
+    waterFeatures: (sunShadowMapFeatures.coastlines?.length || 0) +
+      (sunShadowMapFeatures.waterAreas?.length || 0) +
+      (sunShadowMapFeatures.waterways?.length || 0)
+  });
 
   const messages = [];
   if(sunShadowBuildings.length){
@@ -2115,17 +2111,17 @@ async function fetchNearbyOsmMapData(lat, lon){
       const maxZ = Math.max(...zs);
       const centreX = (minX + maxX) / 2;
       const centreZ = (minZ + maxZ) / 2;
-      const taggedHeight = parseFloat(String(element.tags?.height || '').replace(/[^\d.]/g,''));
-      const levels = parseFloat(element.tags?.['building:levels']);
-      const height = isFinite(taggedHeight) && taggedHeight > 0
-        ? taggedHeight
-        : (isFinite(levels) && levels > 0 ? levels * 3 : 8);
+      const footprintArea = polygonArea(points);
+      const heightInfo = estimateBuildingHeight(element.tags || {}, footprintArea);
       return {
         x:centreX,
         z:centreZ,
         width:Math.max(maxX - minX, 2),
         depth:Math.max(maxZ - minZ, 2),
-        height:clamp(height, 3, 35),
+        height:heightInfo.height,
+        minHeight:heightInfo.minHeight,
+        heightSource:heightInfo.source,
+        footprintArea,
         points,
         distance:Math.hypot(centreX, centreZ)
       };
@@ -2190,6 +2186,105 @@ async function fetchNearbyOsmMapData(lat, lon){
     .slice(0, 120);
 
   return { buildings, buildingFootprints, roads, coastlines, waterAreas, waterways };
+}
+
+function parseOsmMetres(value){
+  if(value == null || value === '') return null;
+  if(typeof value === 'number') return isFinite(value) ? value : null;
+  const text = String(value).trim().toLowerCase().replace(',', '.');
+  if(!text) return null;
+  const match = text.match(/-?\d+(?:\.\d+)?/);
+  if(!match) return null;
+  const metres = Number(match[0]);
+  if(!isFinite(metres)) return null;
+  return text.includes('ft') || text.includes("'") ? metres * 0.3048 : metres;
+}
+
+function parseOsmLevels(value){
+  if(value == null || value === '') return null;
+  const level = Number(String(value).replace(',', '.').match(/-?\d+(?:\.\d+)?/)?.[0]);
+  return isFinite(level) ? level : null;
+}
+
+function polygonArea(points){
+  if(!Array.isArray(points) || points.length < 3) return 0;
+  let area = 0;
+  for(let i=0;i<points.length;i++){
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    area += a.x * b.z - b.x * a.z;
+  }
+  return Math.abs(area) / 2;
+}
+
+function estimateBuildingHeight(tags={}, footprintArea=0, externalHeight=null){
+  // External city models or LoD1 datasets can pass a trusted height here later,
+  // ahead of OSM-derived and fallback assumptions.
+  const roofHeight = Math.max(0, parseOsmMetres(tags['roof:height']) ?? 0);
+  const minHeightFromTag = parseOsmMetres(tags.min_height);
+  const minLevel = parseOsmLevels(tags['building:min_level']);
+  let minHeight = Math.max(0, minHeightFromTag ?? (minLevel != null ? minLevel * 3.1 : 0));
+
+  const externalMetres = parseOsmMetres(externalHeight);
+  if(externalMetres != null && externalMetres > 0){
+    return normalizeBuildingHeight(externalMetres + roofHeight, minHeight, 'external', true);
+  }
+
+  const explicitHeight = parseOsmMetres(tags.height);
+  if(explicitHeight != null && explicitHeight > 0){
+    return normalizeBuildingHeight(explicitHeight + roofHeight, minHeight, 'height', true);
+  }
+
+  const buildingHeight = parseOsmMetres(tags['building:height']);
+  if(buildingHeight != null && buildingHeight > 0){
+    return normalizeBuildingHeight(buildingHeight + roofHeight, minHeight, 'building:height', true);
+  }
+
+  const buildingLevels = parseOsmLevels(tags['building:levels']);
+  if(buildingLevels != null && buildingLevels > 0){
+    return normalizeBuildingHeight(buildingLevels * 3.1 + roofHeight, minHeight, 'building:levels', false);
+  }
+
+  const levels = parseOsmLevels(tags.levels);
+  if(levels != null && levels > 0){
+    return normalizeBuildingHeight(levels * 3.1 + roofHeight, minHeight, 'levels', false);
+  }
+
+  const type = String(tags.building || '').toLowerCase();
+  const area = Math.max(0, Number(footprintArea) || 0);
+  const size = area < 90 ? 'small' : (area < 520 ? 'medium' : 'large');
+  let fallbackHeight;
+
+  // Fallbacks are intentionally conservative: they improve visual scale without
+  // pretending to know exact storey counts where OSM did not provide them.
+  if(['garage','garages','shed','carport'].includes(type)){
+    fallbackHeight = 3;
+  }else if(['house','detached','semidetached_house','terrace','bungalow','cabin'].includes(type)){
+    fallbackHeight = size === 'small' ? 6 : (size === 'medium' ? 7.5 : 9);
+  }else if(type === 'residential'){
+    fallbackHeight = size === 'small' ? 7 : (size === 'medium' ? 9 : 14);
+  }else if(['apartments','dormitory'].includes(type)){
+    fallbackHeight = size === 'small' ? 12 : (size === 'medium' ? 18 : 24);
+  }else if(['retail','commercial','office','hotel'].includes(type)){
+    fallbackHeight = size === 'small' ? 12 : (size === 'medium' ? 20 : 30);
+  }else if(['industrial','warehouse','manufacture'].includes(type)){
+    fallbackHeight = size === 'small' ? 8 : (size === 'medium' ? 11 : 14);
+  }else{
+    fallbackHeight = size === 'small' ? 5 : (size === 'medium' ? 9 : 16);
+  }
+
+  return normalizeBuildingHeight(fallbackHeight + roofHeight, minHeight, `fallback:${type || 'unknown'}`, false);
+}
+
+function normalizeBuildingHeight(height, minHeight, source, explicit){
+  const maxHeight = explicit ? 300 : 120;
+  let totalHeight = clamp(Number(height) || 0, 2.5, maxHeight);
+  let baseHeight = clamp(Number(minHeight) || 0, 0, Math.max(totalHeight - 2.5, 0));
+  return {
+    height:totalHeight,
+    minHeight:baseHeight,
+    source
+  };
 }
 
 function cleanMapPolygonPoints(points){
@@ -2297,6 +2392,15 @@ function renderSunShadowScene(result){
     canvas.height = pixelHeight;
   }
 
+  const extent = 1500;
+  // Keep flat layers clearly separated in depth.
+  // The previous version placed the solid ground, OSM map lines, and shadows within a few centimetres,
+  // which can cause z-fighting / shimmering on mobile GPUs.
+  const mapY = -0.92;
+  const shadowY = -0.12;
+  const userOffset = result.userOffset || {x:0,z:0};
+  const userX = Number.isFinite(userOffset.x) ? userOffset.x : 0;
+  const userZ = Number.isFinite(userOffset.z) ? userOffset.z : 0;
   const groundTriangles = [];
   const groundColors = [];
   const mapTriangles = [];
@@ -2305,30 +2409,10 @@ function renderSunShadowScene(result){
   const mapLineColors = [];
   const shadowTriangles = [];
   const shadowColors = [];
-  const shadowMaskTriangles = [];
-  const shadowMaskColors = [];
   const buildingTriangles = [];
   const buildingColors = [];
   const markerTriangles = [];
   const markerColors = [];
-  const extent = 1500;
-  // Keep flat layers clearly separated in depth.
-  // The previous version placed the solid ground, OSM map lines, and shadows within a few centimetres,
-  // which can cause z-fighting / shimmering on mobile GPUs.
-  const groundY = -1.40;
-  const mapY = -0.92;
-  const shadowY = -0.12;
-
-  // Do not draw a solid ground quad. The WebGL clear colour already gives a pale floor,
-  // and removing the coplanar ground surface avoids the flashing grey blocks / stripes.
-
-  // Shadow rendering uses a stencil-masked union silhouette so overlapping shadows do not get darker.
-  addQuad(
-    shadowMaskTriangles, shadowMaskColors,
-    [-extent,shadowY,-extent], [extent,shadowY,-extent],
-    [extent,shadowY,extent], [-extent,shadowY,extent],
-    [0.44,0.44,0.44,0.40]
-  );
 
   drawGroundMapFeatures(mapTriangles,mapColors,mapLines,mapLineColors,result.mapFeatures,mapY);
 
@@ -2353,18 +2437,22 @@ function renderSunShadowScene(result){
       );
     }
     if(Array.isArray(displayBuilding.points) && displayBuilding.points.length >= 3){
+      const baseY = Number.isFinite(building.minHeight) ? building.minHeight : 0;
+      const bodyHeight = Math.max((Number(building.height) || 8) - baseY, 2.5);
       addFootprintPrism(
         buildingTriangles, buildingColors,
         displayBuilding.points,
-        building.height,
-        0,
+        bodyHeight,
+        baseY,
         [0.93,0.93,0.93,1]
       );
     }else{
+      const baseY = Number.isFinite(building.minHeight) ? building.minHeight : 0;
+      const bodyHeight = Math.max((Number(building.height) || 8) - baseY, 2.5);
       addBox(
         buildingTriangles, buildingColors,
-        displayBuilding.x, building.height / 2, displayBuilding.z,
-        building.width, building.height, building.depth,
+        displayBuilding.x, baseY + bodyHeight / 2, displayBuilding.z,
+        building.width, bodyHeight, building.depth,
         [0.93,0.93,0.93,1],
         sceneRotation
       );
@@ -2378,8 +2466,8 @@ function renderSunShadowScene(result){
     addCylinderShadowGradient(
       shadowTriangles,
       shadowColors,
-      0,
-      0,
+      userX,
+      userZ,
       markerRadius,
       markerShadowLength,
       displayShadowAzimuth,
@@ -2390,27 +2478,25 @@ function renderSunShadowScene(result){
   }
 
   const headingForMarker = Number.isFinite(result.phoneHeading) ? result.phoneHeading : 0;
-  // Draw the field-of-view marker first, then the location cylinder above it.
-  // This keeps the blue marker at the base without visually cutting through the cylinder.
-  addHeadingTriangle(markerTriangles,markerColors,0,0.03,0,headingForMarker,[0.72,0.88,1.00,1]);
-  addLocationCylinder(markerTriangles,markerColors,0,0.12,0,markerRadius,markerHeight,[0.26,0.26,0.26,1]);
-  addSunPositionMarker(markerTriangles,markerColors,result.sunAzimuth,result.sunAltitude);
+  addHeadingTriangle(markerTriangles,markerColors,userX,0.03,userZ,headingForMarker,[0.72,0.88,1.00,1]);
+  addLocationCylinder(markerTriangles,markerColors,userX,0.12,userZ,markerRadius,markerHeight,[0.26,0.26,0.26,1]);
+  addSunPositionMarker(markerTriangles,markerColors,result.sunAzimuth,result.sunAltitude,userX,userZ);
 
   const projection = mat4Perspective(43 * Math.PI / 180, pixelWidth / pixelHeight, 0.1, 2600);
   const distance = getSunShadowCameraDistance();
   const yawRad = sunShadowCamera.yaw * Math.PI / 180;
   const pitchRad = sunShadowCamera.pitch * Math.PI / 180;
   const eye = [
-    Math.sin(yawRad) * Math.cos(pitchRad) * distance,
+    userX + Math.sin(yawRad) * Math.cos(pitchRad) * distance,
     Math.sin(pitchRad) * distance,
-    Math.cos(yawRad) * Math.cos(pitchRad) * distance
+    userZ + Math.cos(yawRad) * Math.cos(pitchRad) * distance
   ];
-  const target = [0,8,0];
+  const target = [userX,8,userZ];
   const view = mat4LookAt(eye,target,[0,1,0]);
   const matrix = mat4Multiply(projection, view);
 
   gl.viewport(0,0,pixelWidth,pixelHeight);
-  gl.clearColor(0.98,0.98,0.98,1);
+  gl.clearColor(0.91,0.91,0.91,1);
   gl.clearStencil(0);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
   gl.enable(gl.DEPTH_TEST);
@@ -2539,10 +2625,12 @@ function addLocationCylinder(positions,colors,x,y,z,radius,height,color,segments
   }
 }
 
-function addSunPositionMarker(positions,colors,sunAzimuth,sunAltitude){
+function addSunPositionMarker(positions,colors,sunAzimuth,sunAltitude,originX=0,originZ=0){
   if(!Number.isFinite(sunAzimuth) || !Number.isFinite(sunAltitude)) return;
   // Hide the sun marker when the sun is at or below the horizon.
   if(sunAltitude <= 0) return;
+  const sunAlpha = smoothstep(0,4,sunAltitude);
+  if(sunAlpha <= 0) return;
   // Place a small white sphere in the sun's compass direction and approximate altitude.
   // It is drawn with the marker overlay pass so it stays visible as a clear position indicator.
   const displayAzimuth = worldAzimuthToDisplayAzimuth(sunAzimuth);
@@ -2550,9 +2638,15 @@ function addSunPositionMarker(positions,colors,sunAzimuth,sunAltitude){
   const altitudeRad = sunAltitude * Math.PI / 180;
   const horizontalDistance = 230;
   const y = clamp(Math.tan(altitudeRad) * horizontalDistance + 28, 16, 240);
-  const x = direction.x * horizontalDistance;
-  const z = direction.z * horizontalDistance;
-  addSphere(positions,colors,x,y,z,8,[1,1,1,0.96],18,9);
+  const x = originX + direction.x * horizontalDistance;
+  const z = originZ + direction.z * horizontalDistance;
+  addSphere(positions,colors,x,y,z,8,[1,1,1,0.96 * sunAlpha],18,9);
+}
+
+function smoothstep(edge0, edge1, value){
+  if(edge0 === edge1) return value >= edge1 ? 1 : 0;
+  const t = clamp((value - edge0) / (edge1 - edge0), 0, 1);
+  return t * t * (3 - 2 * t);
 }
 
 function addSphere(positions,colors,x,y,z,radius,color,segments=18,rings=9){
@@ -2621,14 +2715,6 @@ function drawGroundMapFeatures(trianglePositions,triangleColors,linePositions,li
   const lineY = y + 0.035;
 
   // Draw water and coastline first, underneath roads and building footprints.
-  // Ocean water usually is not returned by Overpass as a closed polygon, so infer the sea side
-  // from natural=coastline lines by filling the side that faces away from the current location.
-  for(const coastline of mapFeatures.coastlines || []){
-    const points = (coastline.points || []).filter(point => isFinite(point.x) && isFinite(point.z));
-    if(points.length >= 2){
-      addInferredOceanFromCoastline(trianglePositions,triangleColors,points,fillY - 0.055,1700,[0.84,0.86,0.86,1]);
-    }
-  }
   for(const area of mapFeatures.waterAreas || []){
     const points = cleanMapPolygonPoints(area.points || []);
     if(points.length >= 3){
@@ -2700,47 +2786,6 @@ function addFlatMapPolygon(positions,colors,points,y,color){
     const b = points[(i+1) % points.length];
     positions.push(centre.x,y,centre.z,a.x,y,a.z,b.x,y,b.z);
     colors.push(...rgba,...rgba,...rgba);
-  }
-}
-
-function addInferredOceanFromCoastline(positions,colors,points,y,extendDistance,color){
-  const cleanPoints = (points || []).filter(point => isFinite(point.x) && isFinite(point.z));
-  if(cleanPoints.length < 2) return;
-  const rgba = normalizeColor(color);
-  const extension = Math.max(Number(extendDistance) || 1000, 300);
-
-  for(let i=0;i<cleanPoints.length-1;i++){
-    const a = cleanPoints[i];
-    const b = cleanPoints[i+1];
-    const dx = b.x - a.x;
-    const dz = b.z - a.z;
-    const len = Math.hypot(dx,dz);
-    if(len < 0.5) continue;
-
-    let nx = -dz / len;
-    let nz = dx / len;
-    const midX = (a.x + b.x) / 2;
-    const midZ = (a.z + b.z) / 2;
-
-    // The simulator is centred on the user. For local coastal views, the land side is usually
-    // the side facing the user; the sea side is the opposite direction. Choose the normal that
-    // points away from the centre, then fill that side as ocean.
-    if(nx * midX + nz * midZ < 0){
-      nx = -nx;
-      nz = -nz;
-    }
-
-    const aFar = {x:a.x + nx * extension, z:a.z + nz * extension};
-    const bFar = {x:b.x + nx * extension, z:b.z + nz * extension};
-    positions.push(
-      a.x,y,a.z,
-      b.x,y,b.z,
-      bFar.x,y,bFar.z,
-      a.x,y,a.z,
-      bFar.x,y,bFar.z,
-      aFar.x,y,aFar.z
-    );
-    colors.push(...rgba,...rgba,...rgba,...rgba,...rgba,...rgba);
   }
 }
 
@@ -2918,6 +2963,94 @@ function addFlatPolygon(positions,colors,points,y,color){
   }
 }
 
+function addFlatPolygonTriangulated(positions,colors,points,y,color){
+  const polygon = cleanMapPolygonPoints(points);
+  if(!polygon || polygon.length < 3) return;
+  const triangles = triangulatePolygon(polygon);
+  const rgba = normalizeColor(color);
+  for(const [a,b,c] of triangles){
+    positions.push(a.x,y,a.z,b.x,y,b.z,c.x,y,c.z);
+    colors.push(...rgba,...rgba,...rgba);
+  }
+}
+
+function triangulatePolygon(points){
+  const polygon = cleanMapPolygonPoints(points);
+  if(polygon.length < 3) return [];
+  if(polygon.length === 3) return [[polygon[0],polygon[1],polygon[2]]];
+
+  const signedArea = signedPolygonArea(polygon);
+  if(Math.abs(signedArea) < 0.01) return [];
+  const wantCcw = signedArea > 0;
+  const remaining = polygon.map((_, index) => index);
+  const triangles = [];
+  let guard = 0;
+
+  while(remaining.length > 3 && guard < polygon.length * polygon.length){
+    let clipped = false;
+    for(let i=0;i<remaining.length;i++){
+      const prevIndex = remaining[(i - 1 + remaining.length) % remaining.length];
+      const currIndex = remaining[i];
+      const nextIndex = remaining[(i + 1) % remaining.length];
+      const a = polygon[prevIndex];
+      const b = polygon[currIndex];
+      const c = polygon[nextIndex];
+      const cross = cross2d(a,b,c);
+      const convex = wantCcw ? cross > 0.001 : cross < -0.001;
+      if(!convex) continue;
+
+      let containsPoint = false;
+      for(const candidateIndex of remaining){
+        if(candidateIndex === prevIndex || candidateIndex === currIndex || candidateIndex === nextIndex) continue;
+        if(pointInTriangle(polygon[candidateIndex],a,b,c)){
+          containsPoint = true;
+          break;
+        }
+      }
+      if(containsPoint) continue;
+
+      triangles.push(wantCcw ? [a,b,c] : [a,c,b]);
+      remaining.splice(i,1);
+      clipped = true;
+      break;
+    }
+    if(!clipped) return [];
+    guard += 1;
+  }
+
+  if(remaining.length === 3){
+    const [ia,ib,ic] = remaining;
+    const a = polygon[ia];
+    const b = polygon[ib];
+    const c = polygon[ic];
+    triangles.push(wantCcw ? [a,b,c] : [a,c,b]);
+  }
+  return triangles;
+}
+
+function signedPolygonArea(points){
+  let area = 0;
+  for(let i=0;i<points.length;i++){
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    area += a.x * b.z - b.x * a.z;
+  }
+  return area / 2;
+}
+
+function cross2d(a,b,c){
+  return (b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x);
+}
+
+function pointInTriangle(point,a,b,c){
+  const area = Math.abs(cross2d(a,b,c));
+  if(area < 0.001) return false;
+  const area1 = Math.abs(cross2d(point,a,b));
+  const area2 = Math.abs(cross2d(point,b,c));
+  const area3 = Math.abs(cross2d(point,c,a));
+  return Math.abs((area1 + area2 + area3) - area) <= 0.05;
+}
+
 function rotateGroundPoint(x,z,degrees){
   const radians = degrees * Math.PI / 180;
   const cos = Math.cos(radians);
@@ -2969,7 +3102,7 @@ function addFootprintPrism(positions,colors,points,height,baseY,color){
     );
   }
 
-  addFlatPolygon(positions,colors,polygon,topY,shadeColor(baseColor,1.03));
+  addFlatPolygonTriangulated(positions,colors,polygon,topY,shadeColor(baseColor,1.03));
 }
 
 function addBox(positions, colors, x,y,z,width,height,depth,color,rotation=0){
@@ -3190,23 +3323,14 @@ async function refreshFrames(){
   try{
     const meta = await fetchRainViewerMetadata();
     rvHost = meta.host || rvHost;
-    const past = (meta.radar?.past ?? []).filter(frame => frame?.path && Number.isFinite(Number(frame.time)));
-    const nowcast = (meta.radar?.nowcast ?? []).filter(frame => frame?.path && Number.isFinite(Number(frame.time)));
-    cloudFrames = (meta.satellite?.infrared ?? [])
-      .filter(frame => frame?.path && Number.isFinite(Number(frame.time)))
-      .map(frame => ({time:Number(frame.time), path:String(frame.path)}))
-      .sort((a,b) => a.time - b.time);
-    const combined = [...past.slice(-8), ...nowcast.slice(0,6)];
-    const seen = new Set();
-    rvFrames = combined
-      .map(frame => ({time:Number(frame.time), path:String(frame.path)}))
-      .filter(frame => {
-        const key = `${frame.time}:${frame.path}`;
-        if(seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
-      .sort((a,b) => a.time - b.time);
+    const parsed = parseRainViewerFrames(meta);
+    cloudFrames = parsed.cloudFrames;
+    rvFrames = parsed.radarFrames;
+    console.info('[RainViewer] frame counts', {
+      radarPast: parsed.past.length,
+      radarNowcast: parsed.nowcast.length,
+      satelliteInfrared: cloudFrames.length
+    });
 
     if(!rvFrames.length){
       setRadarState('empty');
@@ -3216,10 +3340,10 @@ async function refreshFrames(){
 
     // If RainViewer has no nowcast frames, start from the newest past frame.
     // The old logic wrapped to the earliest frame when nowcast.length === 0.
-    rvIndex = nowcast.length
-      ? Math.max(0, rvFrames.findIndex(frame => frame.time === Number(nowcast[0].time)))
+    rvIndex = parsed.nowcast.length
+      ? Math.max(0, rvFrames.findIndex(frame => frame.time === Number(parsed.nowcast[0].time)))
       : rvFrames.length - 1;
-    if(rvIndex < 0) rvIndex = Math.max(rvFrames.length - nowcast.length,0);
+    if(rvIndex < 0) rvIndex = Math.max(rvFrames.length - parsed.nowcast.length,0);
     showFrame(rvIndex);
   }catch(e){
     console.error('RainViewer error', e);
@@ -3227,6 +3351,35 @@ async function refreshFrames(){
     cloudFrames = [];
     setRadarState('error');
   }
+}
+
+function parseRainViewerFrames(meta){
+  const past = (meta?.radar?.past ?? [])
+    .filter(frame => frame?.path && Number.isFinite(Number(frame.time)))
+    .map(frame => ({time:Number(frame.time), path:String(frame.path)}));
+  const nowcast = (meta?.radar?.nowcast ?? [])
+    .filter(frame => frame?.path && Number.isFinite(Number(frame.time)))
+    .map(frame => ({time:Number(frame.time), path:String(frame.path)}));
+  const clouds = (meta?.satellite?.infrared ?? [])
+    .filter(frame => frame?.path && Number.isFinite(Number(frame.time)))
+    .map(frame => ({time:Number(frame.time), path:String(frame.path)}))
+    .sort((a,b) => a.time - b.time);
+  const combined = [...past.slice(-8), ...nowcast.slice(0,6)];
+  const seen = new Set();
+  const radarFrames = combined
+    .filter(frame => {
+      const key = `${frame.time}:${frame.path}`;
+      if(seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a,b) => a.time - b.time);
+  return {
+    past,
+    nowcast,
+    cloudFrames: clouds,
+    radarFrames
+  };
 }
 
 async function fetchRainViewerMetadata(){
@@ -3286,6 +3439,12 @@ function showFrame(i){
   rvIndex = (i + frames.length) % frames.length;
   const f = frames[rvIndex];
   const cloudFrame = findClosestCloudFrame(f.time);
+  console.info('[RainViewer] selected radar frame', {
+    time: f.time,
+    isoTime: new Date(f.time * 1000).toISOString(),
+    satelliteInfraredFrames: cloudFrames.length,
+    cloudFrameTime: cloudFrame?.time ?? null
+  });
   if(cloudOverlay){
     rvMap.removeLayer(cloudOverlay);
     cloudOverlay = null;
@@ -3327,7 +3486,7 @@ function showFrame(i){
   setRadarState('ready');
   const ts = new Date(f.time*1000);
   const latestLabel = rvIndex === frames.length - 1 ? 'latest' : `${rvIndex + 1}/${frames.length}`;
-  const cloudLabel = cloudFrame ? 'cloud layer on' : 'cloud layer unavailable';
+  const cloudLabel = cloudFrame ? 'cloud layer on' : 'Cloud layer unavailable from RainViewer';
   $('#rvLabel').textContent = `Radar time: ${
     ts.toLocaleString(undefined,{
       hour:'numeric',
