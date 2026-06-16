@@ -592,10 +592,6 @@
         <div class="sun-shadow-layout">
           <div class="sun-shadow-scene">
             <canvas id="sunShadowCanvas" aria-label="3D sun and shadow simulation"></canvas>
-            <span class="compass-label compass-n">N</span>
-            <span class="compass-label compass-e">E</span>
-            <span class="compass-label compass-s">S</span>
-            <span class="compass-label compass-w">W</span>
             <span id="sunShadowPhonePointer" class="phone-heading-indicator" aria-hidden="true"></span>
           </div>
           <div id="sunShadowStatus" class="sun-shadow-status"></div>
@@ -734,6 +730,8 @@ let sunShadowCamera = {
 let sunShadowPointers = new Map();
 let sunShadowPinchStart = null;
 let sunShadowRenderFrame = null;
+let sunShadowTapStart = null;
+let sunShadowLastTap = null;
 
 /* UV 粉橙色背景帶 */
 const UV_BANDS = [
@@ -1610,6 +1608,17 @@ function initSunShadowCameraControls(){
   }, {once:true});
   canvas.addEventListener('pointerdown', event => {
     event.preventDefault();
+    if(sunShadowPointers.size === 0){
+      sunShadowTapStart = {
+        id:event.pointerId,
+        x:event.clientX,
+        y:event.clientY,
+        time:performance.now(),
+        cancelled:false
+      };
+    }else if(sunShadowTapStart){
+      sunShadowTapStart.cancelled = true;
+    }
     sunShadowPointers.set(event.pointerId,{x:event.clientX,y:event.clientY});
     try{ canvas.setPointerCapture(event.pointerId); }catch{}
     if(sunShadowPointers.size === 2){
@@ -1626,12 +1635,16 @@ function initSunShadowCameraControls(){
     const previous = sunShadowPointers.get(event.pointerId);
     if(!previous) return;
     event.preventDefault();
+    if(sunShadowTapStart?.id === event.pointerId){
+      const moved = Math.hypot(event.clientX - sunShadowTapStart.x,event.clientY - sunShadowTapStart.y);
+      if(moved > 8) sunShadowTapStart.cancelled = true;
+    }
     sunShadowPointers.set(event.pointerId,{x:event.clientX,y:event.clientY});
 
     if(sunShadowPointers.size === 1){
-      sunShadowCamera.yaw += (event.clientX - previous.x) * 0.32;
+      sunShadowCamera.yaw -= (event.clientX - previous.x) * 0.32;
       sunShadowCamera.pitch = clamp(
-        sunShadowCamera.pitch - (event.clientY - previous.y) * 0.28,
+        sunShadowCamera.pitch + (event.clientY - previous.y) * 0.28,
         12,
         85
       );
@@ -1657,6 +1670,21 @@ function initSunShadowCameraControls(){
     }
   });
   const finishPointer = event => {
+    if(sunShadowTapStart?.id === event.pointerId && !sunShadowTapStart.cancelled){
+      const now = performance.now();
+      const tap = {x:event.clientX,y:event.clientY,time:now};
+      if(
+        sunShadowLastTap &&
+        now - sunShadowLastTap.time < 330 &&
+        Math.hypot(tap.x - sunShadowLastTap.x,tap.y - sunShadowLastTap.y) < 28
+      ){
+        resetSunShadowViewToFacing();
+        sunShadowLastTap = null;
+      }else{
+        sunShadowLastTap = tap;
+      }
+    }
+    if(sunShadowTapStart?.id === event.pointerId) sunShadowTapStart = null;
     sunShadowPointers.delete(event.pointerId);
     if(sunShadowPointers.size < 2) sunShadowPinchStart = null;
     if(sunShadowPointers.size === 1){
@@ -1674,7 +1702,7 @@ function initSunShadowCameraControls(){
   },{passive:false});
   canvas.addEventListener('dblclick',event => {
     event.preventDefault();
-    resetSunShadowView();
+    resetSunShadowViewToFacing();
   });
 }
 
@@ -1708,6 +1736,17 @@ function resetSunShadowView(){
   sunShadowCamera.yaw = -35;
   sunShadowCamera.pitch = 48;
   sunShadowCamera.distanceMap = 320;
+  scheduleSunShadowRender();
+}
+
+function resetSunShadowViewToFacing(){
+  sunShadowCamera.pitch = 48;
+  sunShadowCamera.distanceMap = 320;
+  if(Number.isFinite(phoneHeading)){
+    sunShadowCamera.yaw = (180 - phoneHeading + 360) % 360;
+  }else{
+    sunShadowCamera.yaw = -35;
+  }
   scheduleSunShadowRender();
 }
 
@@ -2488,6 +2527,7 @@ function renderSunShadowScene(result){
   const buildingShadowLengthFactor = result.hasDirectShadow
     ? 1 / Math.tan(Math.max(result.sunAltitude * Math.PI / 180,0.001))
     : 0;
+  const shadowFade = result.hasDirectShadow ? smoothstep(0,8,result.sunAltitude) : 0;
   const displayShadowAzimuth = worldAzimuthToDisplayAzimuth(result.shadowAzimuth);
   const sceneRotation = 0;
   for(const building of result.buildings || []){
@@ -2501,8 +2541,8 @@ function renderSunShadowScene(result){
         polygon,
         shadowY,
         displayShadowAzimuth,
-        [0.24,0.24,0.24,0.5],
-        [0.24,0.24,0.24,0.01],
+        [0.24,0.24,0.24,0.5 * shadowFade],
+        [0.24,0.24,0.24,0.01 * shadowFade],
         8
       );
     }
@@ -2542,8 +2582,8 @@ function renderSunShadowScene(result){
       markerShadowLength,
       displayShadowAzimuth,
       shadowY,
-      [0.24,0.24,0.24,0.68],
-      [0.24,0.24,0.24,0.14]
+      [0.24,0.24,0.24,0.68 * shadowFade],
+      [0.24,0.24,0.24,0.14 * shadowFade]
     );
   }
 
@@ -2562,7 +2602,7 @@ function renderSunShadowScene(result){
     Math.sin(pitchRad) * distance,
     userZ + Math.cos(yawRad) * Math.cos(pitchRad) * distance
   ];
-  addHemisphereGlow(glowTriangles,glowColors,userX,markerHeight * 0.50,userZ,36,[0.10,0.58,1.00],0.22,groundY);
+  addHemisphereGlow(glowTriangles,glowColors,userX,markerHeight * 0.50,userZ,28.8,[0.10,0.58,1.00],0.22,groundY);
   const target = [userX,8,userZ];
   const view = mat4LookAt(eye,target,[0,1,0]);
   const matrix = mat4Multiply(projection, view);
@@ -2817,8 +2857,8 @@ function addHeadingTriangle(positions,colors,x,y,z,heading,color){
   // Single flat field-of-view marker.
   // The narrow point starts at the location cylinder base, and the wide edge opens outward.
   // Vertex alpha creates the gradient: semi-transparent at the tip, fading to transparent at the wide edge.
-  const length = 36;
-  const halfWidth = 18;
+  const length = 72;
+  const halfWidth = 36;
   const apex = [x, y, z];
   const center = [x + dirX * length, y, z + dirZ * length];
   const left = [center[0] - rightX * halfWidth, y, center[2] - rightZ * halfWidth];
