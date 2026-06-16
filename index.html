@@ -2066,7 +2066,7 @@ async function loadSunShadowMapContext(loc){
 async function fetchNearbyOsmMapData(lat, lon){
   const radius = 850;
   const coastRadius = 5000;
-  const query = `[out:json][timeout:30];(way["building"](around:${radius},${lat},${lon});way["highway"](around:${radius},${lat},${lon});way["natural"="coastline"](around:${coastRadius},${lat},${lon});way["natural"="water"](around:${coastRadius},${lat},${lon});way["natural"="bay"](around:${coastRadius},${lat},${lon});way["natural"="strait"](around:${coastRadius},${lat},${lon});way["landuse"="reservoir"](around:${coastRadius},${lat},${lon});way["water"](around:${coastRadius},${lat},${lon});way["waterway"](around:${coastRadius},${lat},${lon}););out tags geom;`;
+  const query = `[out:json][timeout:30];(way["building"](around:${radius},${lat},${lon});way["highway"](around:${radius},${lat},${lon});way["natural"="coastline"](around:${coastRadius},${lat},${lon});way["natural"="water"](around:${coastRadius},${lat},${lon});way["landuse"="reservoir"](around:${coastRadius},${lat},${lon});way["waterway"](around:${coastRadius},${lat},${lon}););out tags geom;`;
   const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
   const response = await fetch(url, {headers:{Accept:'application/json'}});
   if(!response.ok) throw new Error('OSM map fetch failed');
@@ -2089,11 +2089,8 @@ async function fetchNearbyOsmMapData(lat, lon){
   const waterAreaElements = (data.elements || [])
     .filter(element => (
       element.tags?.natural === 'water' ||
-      element.tags?.natural === 'bay' ||
-      element.tags?.natural === 'strait' ||
       element.tags?.landuse === 'reservoir' ||
-      element.tags?.waterway === 'riverbank' ||
-      element.tags?.water
+      element.tags?.waterway === 'riverbank'
     ) && Array.isArray(element.geometry) && element.geometry.length >= 3);
   const waterwayElements = (data.elements || [])
     .filter(element => (
@@ -2729,25 +2726,13 @@ function drawGroundMapFeatures(trianglePositions,triangleColors,linePositions,li
   if(!mapFeatures) return;
   const fillY = y;
   const lineY = y + 0.035;
-  const oceanFill = [0.70,0.78,0.82,1];
-  const waterFill = [0.68,0.79,0.85,1];
-  const waterLine = [0.34,0.51,0.60,1];
-  const waterEdge = [0.52,0.66,0.72,1];
 
   // Draw water and coastline first, underneath roads and building footprints.
-  // Ocean water usually is not returned by Overpass as a closed polygon, so infer the sea side
-  // from natural=coastline lines by filling the side that faces away from the current location.
-  for(const coastline of mapFeatures.coastlines || []){
-    const points = (coastline.points || []).filter(point => isFinite(point.x) && isFinite(point.z));
-    if(points.length >= 2){
-      addInferredOceanFromCoastline(trianglePositions,triangleColors,points,fillY - 0.065,2600,oceanFill);
-    }
-  }
   for(const area of mapFeatures.waterAreas || []){
     const points = cleanMapPolygonPoints(area.points || []);
     if(points.length >= 3){
-      addFlatPolygonTriangulated(trianglePositions,triangleColors,points,fillY - 0.03,waterFill);
-      addGroundPolylineLines(linePositions,lineColors,[...points,points[0]],lineY + 0.005,waterLine);
+      addFlatMapPolygon(trianglePositions,triangleColors,points,fillY - 0.025,[0.92,0.965,0.995,1]);
+      addGroundPolylineLines(linePositions,lineColors,[...points,points[0]],lineY + 0.005,[0.62,0.74,0.84,1]);
     }
   }
   for(const waterway of mapFeatures.waterways || []){
@@ -2758,17 +2743,17 @@ function drawGroundMapFeatures(trianglePositions,triangleColors,linePositions,li
         triangleColors,
         points,
         fillY - 0.015,
-        Math.max((Number(waterway.width) || 4) * 1.25, 2.8),
-        waterFill
+        Math.max(Number(waterway.width) || 4, 2.2),
+        [0.91,0.965,0.995,1]
       );
-      addGroundPolylineLines(linePositions,lineColors,points,lineY + 0.01,waterLine);
+      addGroundPolylineLines(linePositions,lineColors,points,lineY + 0.01,[0.64,0.76,0.86,1]);
     }
   }
   for(const coastline of mapFeatures.coastlines || []){
     const points = (coastline.points || []).filter(point => isFinite(point.x) && isFinite(point.z));
     if(points.length >= 2){
-      addFlatPolyline(trianglePositions,triangleColors,points,fillY - 0.005,12.0,waterEdge);
-      addGroundPolylineLines(linePositions,lineColors,points,lineY + 0.02,waterLine);
+      addFlatPolyline(trianglePositions,triangleColors,points,fillY - 0.005,9.0,[0.82,0.86,0.87,1]);
+      addGroundPolylineLines(linePositions,lineColors,points,lineY + 0.02,[0.42,0.50,0.54,1]);
     }
   }
 
@@ -2814,47 +2799,6 @@ function addFlatMapPolygon(positions,colors,points,y,color){
     const b = points[(i+1) % points.length];
     positions.push(centre.x,y,centre.z,a.x,y,a.z,b.x,y,b.z);
     colors.push(...rgba,...rgba,...rgba);
-  }
-}
-
-function addInferredOceanFromCoastline(positions,colors,points,y,extendDistance,color){
-  const cleanPoints = (points || []).filter(point => isFinite(point.x) && isFinite(point.z));
-  if(cleanPoints.length < 2) return;
-  const rgba = normalizeColor(color);
-  const extension = Math.max(Number(extendDistance) || 1000, 300);
-
-  for(let i=0;i<cleanPoints.length-1;i++){
-    const a = cleanPoints[i];
-    const b = cleanPoints[i+1];
-    const dx = b.x - a.x;
-    const dz = b.z - a.z;
-    const len = Math.hypot(dx,dz);
-    if(len < 0.5) continue;
-
-    let nx = -dz / len;
-    let nz = dx / len;
-    const midX = (a.x + b.x) / 2;
-    const midZ = (a.z + b.z) / 2;
-
-    // The simulator is centred on the user. For local coastal views, the land side is usually
-    // the side facing the user; the sea side is the opposite direction. Choose the normal that
-    // points away from the centre, then fill that side as ocean.
-    if(nx * midX + nz * midZ < 0){
-      nx = -nx;
-      nz = -nz;
-    }
-
-    const aFar = {x:a.x + nx * extension, z:a.z + nz * extension};
-    const bFar = {x:b.x + nx * extension, z:b.z + nz * extension};
-    positions.push(
-      a.x,y,a.z,
-      b.x,y,b.z,
-      bFar.x,y,bFar.z,
-      a.x,y,a.z,
-      bFar.x,y,bFar.z,
-      aFar.x,y,aFar.z
-    );
-    colors.push(...rgba,...rgba,...rgba,...rgba,...rgba,...rgba);
   }
 }
 
