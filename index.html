@@ -303,7 +303,7 @@
       overflow:hidden;
       border:1px solid var(--border);
       border-radius:12px;
-      background:linear-gradient(180deg,#cfcfcf 0%,#e7e7e7 26%,#ffffff 48%,#fbfbf8 100%);
+      background:linear-gradient(180deg,#dce2e6 0%,#eef3f5 30%,#ffffff 54%,#fbfbf8 100%);
     }
     #sunShadowCanvas{
       display:block;
@@ -1613,9 +1613,11 @@ function initSunShadowCameraControls(){
     sunShadowPointers.set(event.pointerId,{x:event.clientX,y:event.clientY});
     try{ canvas.setPointerCapture(event.pointerId); }catch{}
     if(sunShadowPointers.size === 2){
-      const points = [...sunShadowPointers.values()];
+      const gesture = getSunShadowPointerGesture();
       sunShadowPinchStart = {
-        distance:Math.hypot(points[0].x-points[1].x,points[0].y-points[1].y),
+        ...gesture,
+        yaw:sunShadowCamera.yaw,
+        pitch:sunShadowCamera.pitch,
         cameraDistance:getSunShadowCameraDistance()
       };
     }
@@ -1638,10 +1640,18 @@ function initSunShadowCameraControls(){
     }
 
     if(sunShadowPointers.size === 2 && sunShadowPinchStart){
-      const points = [...sunShadowPointers.values()];
-      const distance = Math.hypot(points[0].x-points[1].x,points[0].y-points[1].y);
-      if(distance > 10){
-        setSunShadowCameraDistance(sunShadowPinchStart.cameraDistance * sunShadowPinchStart.distance / distance);
+      const gesture = getSunShadowPointerGesture();
+      if(gesture.distance > 10 && sunShadowPinchStart.distance > 10){
+        const angleDelta = normalizeAngleRadians(gesture.angle - sunShadowPinchStart.angle);
+        setSunShadowCameraDistance(sunShadowPinchStart.cameraDistance * sunShadowPinchStart.distance / gesture.distance);
+        sunShadowCamera.yaw = sunShadowPinchStart.yaw
+          + (gesture.midX - sunShadowPinchStart.midX) * 0.24
+          + angleDelta * 180 / Math.PI * 0.65;
+        sunShadowCamera.pitch = clamp(
+          sunShadowPinchStart.pitch - (gesture.midY - sunShadowPinchStart.midY) * 0.20,
+          12,
+          85
+        );
         scheduleSunShadowRender();
       }
     }
@@ -1649,6 +1659,10 @@ function initSunShadowCameraControls(){
   const finishPointer = event => {
     sunShadowPointers.delete(event.pointerId);
     if(sunShadowPointers.size < 2) sunShadowPinchStart = null;
+    if(sunShadowPointers.size === 1){
+      const point = [...sunShadowPointers.entries()][0];
+      if(point) sunShadowPointers.set(point[0],{...point[1]});
+    }
   };
   canvas.addEventListener('pointerup',finishPointer);
   canvas.addEventListener('pointercancel',finishPointer);
@@ -1662,6 +1676,24 @@ function initSunShadowCameraControls(){
     event.preventDefault();
     resetSunShadowView();
   });
+}
+
+function getSunShadowPointerGesture(){
+  const points = [...sunShadowPointers.values()];
+  if(points.length < 2) return {distance:0,midX:0,midY:0,angle:0};
+  const [a,b] = points;
+  return {
+    distance:Math.hypot(a.x-b.x,a.y-b.y),
+    midX:(a.x+b.x) / 2,
+    midY:(a.y+b.y) / 2,
+    angle:Math.atan2(b.y-a.y,b.x-a.x)
+  };
+}
+
+function normalizeAngleRadians(angle){
+  while(angle > Math.PI) angle -= Math.PI * 2;
+  while(angle < -Math.PI) angle += Math.PI * 2;
+  return angle;
 }
 
 function getSunShadowCameraDistance(){
@@ -1850,10 +1882,13 @@ async function requestPhoneCompassPermission(){
       }
     }
     if(!phoneCompassListening){
-      phoneCompassEventName = 'ondeviceorientationabsolute' in window
-        ? 'deviceorientationabsolute'
-        : 'deviceorientation';
-      window.addEventListener(phoneCompassEventName, handleDeviceOrientation, true);
+      phoneCompassEventName = ['deviceorientation'];
+      if('ondeviceorientationabsolute' in window){
+        phoneCompassEventName.push('deviceorientationabsolute');
+      }
+      for(const eventName of phoneCompassEventName){
+        window.addEventListener(eventName, handleDeviceOrientation, true);
+      }
       phoneCompassListening = true;
     }
     setSunShadowOrientationMode('phone');
@@ -1884,7 +1919,7 @@ function handleDeviceOrientation(event){
     $('#sunShadowCompassStatus').textContent = 'Phone compass active';
     updateCompassOverlay();
     updatePhoneHeadingIndicator();
-    renderCurrentSunShadow();
+    scheduleSunShadowRender();
   }
 }
 
@@ -2437,7 +2472,7 @@ function renderSunShadowScene(result){
     groundTriangles, groundColors,
     [-extent,groundY,-extent], [extent,groundY,-extent],
     [extent,groundY,extent], [-extent,groundY,extent],
-    [0.93,0.94,0.95,1]
+    [0.94,0.95,0.96,1]
   );
 
   // Shadow rendering uses a stencil-masked union silhouette so overlapping shadows do not get darker.
@@ -2514,8 +2549,6 @@ function renderSunShadowScene(result){
 
   const headingForMarker = Number.isFinite(result.phoneHeading) ? result.phoneHeading : 0;
   addHeadingTriangle(headingTriangles,headingColors,userX,0.08,userZ,headingForMarker,[0.05,0.62,1.00,1]);
-  addGlowSphere(glowTriangles,glowColors,userX,markerHeight * 0.52,userZ,8.5,[0.10,0.58,1.00],0.20);
-  addGlowSphere(glowTriangles,glowColors,userX,markerHeight + 5.0,userZ,6.8,[0.10,0.58,1.00],0.18);
   addLocationCylinder(markerTriangles,markerColors,userX,0.12,userZ,markerRadius,markerHeight,[0.08,0.42,0.82,1]);
   addSphere(markerTriangles,markerColors,userX,markerHeight + 5.0,userZ,2.45,[0.08,0.42,0.82,1],18,10);
   addSunPositionMarker(markerTriangles,markerColors,result.sunAzimuth,result.sunAltitude,userX,userZ);
@@ -2529,6 +2562,7 @@ function renderSunShadowScene(result){
     Math.sin(pitchRad) * distance,
     userZ + Math.cos(yawRad) * Math.cos(pitchRad) * distance
   ];
+  addHemisphereGlow(glowTriangles,glowColors,userX,markerHeight * 0.50,userZ,36,[0.10,0.58,1.00],0.22,groundY);
   const target = [userX,8,userZ];
   const view = mat4LookAt(eye,target,[0,1,0]);
   const matrix = mat4Multiply(projection, view);
@@ -2701,23 +2735,29 @@ function addSunPositionMarker(positions,colors,sunAzimuth,sunAltitude,originX=0,
   addSphere(positions,colors,x,y,z,70,[1,1,1,0.96 * sunAlpha],28,14);
 }
 
-function addGlowSphere(positions,colors,x,y,z,radius,color,alpha){
+function addHemisphereGlow(positions,colors,x,y,z,radius,color,alpha,groundY=0){
   const rgb = normalizeColor(color);
-  const layers = [
-    {scale:1.00, alpha:alpha * 0.20},
-    {scale:0.72, alpha:alpha * 0.42},
-    {scale:0.46, alpha:alpha * 0.72}
-  ];
-  for(const layer of layers){
-    addSphere(
-      positions,
-      colors,
-      x,y,z,
-      radius * layer.scale,
-      [rgb[0],rgb[1],rgb[2],layer.alpha],
-      22,
-      12
-    );
+  const segments = 36;
+  const layers = 14;
+  const minY = groundY + 0.02;
+  for(let layer=0; layer<=layers; layer++){
+    const v = layer / layers;
+    const layerY = y - radius + v * radius * 2;
+    if(layerY < minY) continue;
+    const normalizedY = (layerY - y) / radius;
+    const discRadius = Math.sqrt(Math.max(0,1 - normalizedY * normalizedY)) * radius;
+    if(discRadius < 0.2) continue;
+    const layerAlpha = alpha * Math.pow(1 - Math.abs(normalizedY),1.35);
+    const center = [x,layerY,z];
+    const centerColor = [rgb[0],rgb[1],rgb[2],layerAlpha];
+    const edgeColor = [rgb[0],rgb[1],rgb[2],0];
+    for(let seg=0; seg<segments; seg++){
+      const a0 = seg / segments * Math.PI * 2;
+      const a1 = (seg + 1) / segments * Math.PI * 2;
+      const p0 = [x + Math.cos(a0) * discRadius, layerY, z + Math.sin(a0) * discRadius];
+      const p1 = [x + Math.cos(a1) * discRadius, layerY, z + Math.sin(a1) * discRadius];
+      addGradientTriangle(positions,colors,center,p0,p1,centerColor,edgeColor,edgeColor);
+    }
   }
 }
 
@@ -2777,14 +2817,19 @@ function addHeadingTriangle(positions,colors,x,y,z,heading,color){
   // Single flat field-of-view marker.
   // The narrow point starts at the location cylinder base, and the wide edge opens outward.
   // Vertex alpha creates the gradient: semi-transparent at the tip, fading to transparent at the wide edge.
+  const length = 36;
+  const halfWidth = 18;
   const apex = [x, y, z];
-  const left = [x + dirX * 18 - rightX * 8, y, z + dirZ * 18 - rightZ * 8];
-  const right = [x + dirX * 18 + rightX * 8, y, z + dirZ * 18 + rightZ * 8];
+  const center = [x + dirX * length, y, z + dirZ * length];
+  const left = [center[0] - rightX * halfWidth, y, center[2] - rightZ * halfWidth];
+  const right = [center[0] + rightX * halfWidth, y, center[2] + rightZ * halfWidth];
   const rgba = normalizeColor(color);
-  const apexColor = [rgba[0],rgba[1],rgba[2],0.72];
-  const wideColor = [rgba[0],rgba[1],rgba[2],0.10];
+  const apexColor = [rgba[0],rgba[1],rgba[2],0.80];
+  const centerColor = [rgba[0],rgba[1],rgba[2],0.00];
+  const edgeColor = [rgba[0],rgba[1],rgba[2],0.00];
 
-  addGradientTriangle(positions,colors,apex,left,right,apexColor,wideColor,wideColor);
+  addGradientTriangle(positions,colors,apex,left,center,apexColor,edgeColor,centerColor);
+  addGradientTriangle(positions,colors,apex,center,right,apexColor,centerColor,edgeColor);
 }
 
 function drawGroundMapFeatures(trianglePositions,triangleColors,linePositions,lineColors,mapFeatures,y){
@@ -2908,7 +2953,6 @@ function addFlatDisc(positions,colors,x,y,z,radius,color,segments=18){
     colors.push(...rgba,...rgba,...rgba);
   }
 }
-
 
 function addFlatPolygonGradientByDirection(positions,colors,points,y,shadowAzimuth,nearColor,farColor){
   const polygon = cleanMapPolygonPoints(points);
