@@ -303,7 +303,7 @@
       overflow:hidden;
       border:1px solid var(--border);
       border-radius:12px;
-      background:linear-gradient(180deg,#555555 0%,#7a7a7a 42%,#cfcfcf 72%,#eeeeee 100%);
+      background:linear-gradient(180deg,#adadad 0%,#c7c7c7 38%,#e2e2df 70%,#f0f0ec 100%);
     }
     #sunShadowCanvas{
       display:block;
@@ -2410,7 +2410,7 @@ function renderSunShadowScene(result){
   // which can cause z-fighting / shimmering on mobile GPUs.
   const groundY = -1.40;
   const mapY = -0.92;
-  const shadowY = -0.12;
+  const shadowY = 0.06;
   const userOffset = result.userOffset || {x:0,z:0};
   const userX = Number.isFinite(userOffset.x) ? userOffset.x : 0;
   const userZ = Number.isFinite(userOffset.z) ? userOffset.z : 0;
@@ -2419,7 +2419,7 @@ function renderSunShadowScene(result){
     groundTriangles, groundColors,
     [-extent,groundY,-extent], [extent,groundY,-extent],
     [extent,groundY,extent], [-extent,groundY,extent],
-    [0.84,0.84,0.82,1]
+    [0.89,0.89,0.86,1]
   );
 
   // Shadow rendering uses a stencil-masked union silhouette so overlapping shadows do not get darker.
@@ -2448,8 +2448,8 @@ function renderSunShadowScene(result){
         polygon,
         shadowY,
         displayShadowAzimuth,
-        [0.30,0.30,0.30,0.58],
-        [0.30,0.30,0.30,0.08]
+        [0.24,0.24,0.24,1.2],
+        [0.24,0.24,0.24,0.05]
       );
     }
     if(Array.isArray(displayBuilding.points) && displayBuilding.points.length >= 3){
@@ -2488,8 +2488,8 @@ function renderSunShadowScene(result){
       markerShadowLength,
       displayShadowAzimuth,
       shadowY,
-      [0.30,0.30,0.30,0.54],
-      [0.30,0.30,0.30,0.08]
+      [0.24,0.24,0.24,0.68],
+      [0.24,0.24,0.24,0.14]
     );
   }
 
@@ -2500,7 +2500,7 @@ function renderSunShadowScene(result){
   addLocationCylinder(markerTriangles,markerColors,userX,0.12,userZ,markerRadius,markerHeight,[0.26,0.26,0.26,1]);
   addSunPositionMarker(markerTriangles,markerColors,result.sunAzimuth,result.sunAltitude,userX,userZ);
 
-  const projection = mat4Perspective(43 * Math.PI / 180, pixelWidth / pixelHeight, 0.1, 2600);
+  const projection = mat4Perspective(43 * Math.PI / 180, pixelWidth / pixelHeight, 0.1, 6200);
   const distance = getSunShadowCameraDistance();
   const yawRad = sunShadowCamera.yaw * Math.PI / 180;
   const pitchRad = sunShadowCamera.pitch * Math.PI / 180;
@@ -2535,6 +2535,7 @@ function renderSunShadowScene(result){
 
   // Draw gradient shadows directly, but use stencil so every pixel is shaded only once.
   // This keeps the shadow semi-transparent and fading out, without overlaps becoming darker.
+  gl.disable(gl.DEPTH_TEST);
   gl.enable(gl.STENCIL_TEST);
   gl.stencilMask(0xFF);
   gl.depthMask(false);
@@ -2546,6 +2547,7 @@ function renderSunShadowScene(result){
   gl.depthMask(true);
   gl.disable(gl.BLEND);
   gl.disable(gl.STENCIL_TEST);
+  gl.enable(gl.DEPTH_TEST);
 
   drawWebGlGeometry(gl,sunShadowProgram,gl.TRIANGLES,buildingTriangles,buildingColors);
   gl.disable(gl.DEPTH_TEST);
@@ -2654,11 +2656,11 @@ function addSunPositionMarker(positions,colors,sunAzimuth,sunAltitude,originX=0,
   const displayAzimuth = worldAzimuthToDisplayAzimuth(sunAzimuth);
   const direction = azimuthToSceneVector(displayAzimuth);
   const altitudeRad = sunAltitude * Math.PI / 180;
-  const horizontalDistance = 420;
-  const y = clamp(Math.tan(altitudeRad) * horizontalDistance + 34, 22, 420);
+  const horizontalDistance = 2100;
+  const y = clamp(Math.tan(altitudeRad) * horizontalDistance + 34, 34, 1500);
   const x = originX + direction.x * horizontalDistance;
   const z = originZ + direction.z * horizontalDistance;
-  addSphere(positions,colors,x,y,z,14,[1,1,1,0.96 * sunAlpha],22,11);
+  addSphere(positions,colors,x,y,z,70,[1,1,1,0.96 * sunAlpha],28,14);
 }
 
 function smoothstep(edge0, edge1, value){
