@@ -175,7 +175,6 @@
       height:380px;
       border-radius:14px;
       border:1px solid var(--border);
-      filter:grayscale(1) contrast(1.1) brightness(0.98);
       cursor:crosshair;
     }
     .radar-wrap{
@@ -213,6 +212,26 @@
       flex-wrap:wrap;
     }
     .rv-time{min-width:190px}
+    .radar-note,
+    .radar-legend{
+      margin-top:8px;
+      font-size:12px;
+      color:var(--muted);
+    }
+    .radar-legend{
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+      align-items:center;
+    }
+    .radar-swatch{
+      display:inline-block;
+      width:18px;
+      height:8px;
+      border-radius:999px;
+      margin-right:4px;
+      vertical-align:middle;
+    }
 
     /* Sun and shadow simulator */
     .sun-shadow-layout{
@@ -544,6 +563,21 @@
       .hour-block{
         min-width:56px;
       }
+      #dailyTable table{
+        font-size:11px;
+      }
+      #dailyTable th,
+      #dailyTable td{
+        padding:5px 4px;
+      }
+      #dailyTable th{
+        font-size:10px;
+        line-height:1.15;
+        white-space:normal;
+      }
+      #dailyTable td{
+        font-size:11px;
+      }
       .sun-shadow-scene{min-height:min(420px,70vh)}
       #sunShadowCanvas{height:min(420px,70vh)}
       .sun-shadow-summary{font-size:12px}
@@ -618,10 +652,20 @@
 
       <!-- Radar -->
       <section class="card span12">
-        <h2>Radar (0–2 h nowcast)</h2>
+        <h2>Precipitation radar — previous 2 hours</h2>
+        <div class="radar-note">
+          RainViewer radar shows precipitation echoes such as rain, hail or snow. It does not show ordinary dry cloud.
+          Radar tiles are native to zoom 7; closer-looking map detail would not add radar resolution.
+        </div>
         <div class="radar-wrap">
           <div id="radarMap"></div>
           <div id="radarMessage" class="radar-message" role="status" aria-live="polite"></div>
+        </div>
+        <div class="radar-legend" aria-label="Radar colour legend">
+          <span><i class="radar-swatch" style="background:#9fd8ff"></i>Light rain</span>
+          <span><i class="radar-swatch" style="background:#a8dfb2"></i>Moderate rain</span>
+          <span><i class="radar-swatch" style="background:#ffe39a"></i>Heavy rain</span>
+          <span><i class="radar-swatch" style="background:#f3a0a0"></i>Hail or intense cells</span>
         </div>
         <div class="rv-controls">
           <button id="rvPrev">◀︎</button>
@@ -679,13 +723,13 @@
       </section>
 
       <!-- Humidity -->
-      <section class="card span12">
+      <section class="card span6">
         <h2>Humidity</h2>
         <canvas id="humChart" height="200"></canvas>
       </section>
 
       <!-- UV -->
-      <section class="card span12">
+      <section class="card span6">
         <h2>UV</h2>
         <canvas id="uvChart" height="200"></canvas>
       </section>
@@ -704,8 +748,8 @@
 
       <section class="card span12">
         <div class="footnote">
-          Data sources: Open-Meteo (multi-model blend), BOM ACCESS-G, BOM surface obs (optional),
-          Open-Meteo Air Quality, RainViewer radar/satellite when available, SunCalc, OpenStreetMap buildings, and SRTM elevation.
+          Data sources: Open-Meteo forecast/current model data, BOM ACCESS-G comparison when available, nearby BOM surface observations when valid,
+          Open-Meteo Air Quality, RainViewer precipitation radar history, SunCalc, OpenStreetMap buildings, and SRTM elevation.
         </div>
       </section>
     </div>
@@ -742,14 +786,20 @@ Chart.defaults.color       = '#444444';
 Chart.defaults.borderColor = '#cccccc';
 
 let humChart, uvChart, dayRainChart;
-let rvMap, baseLayer, labelLayer, rvFrames = [], cloudFrames = [], rvIndex = 0, rvTimer = null, overlay = null, cloudOverlay = null;
+let rvMap, baseLayer, labelLayer, rvFrames = [], rvIndex = 0, rvTimer = null, overlay = null;
 let rvHost = 'https://tilecache.rainviewer.com';
 let lastCenter = { lat: DEFAULT_LOC.lat, lon: DEFAULT_LOC.lon };
 let locMarker = null;
 let lastFusion = null;
+let lastBomData = null;
+let lastAqiData = null;
+let lastCurrentData = null;
+let lastObsData = null;
 let selectedRainDay = null;
 let radarTileErrors = 0;
+let radarTileLoads = 0;
 let loadSequence = 0;
+let loadAbortController = null;
 let selectedLocation = {...DEFAULT_LOC};
 let sunShadowMode = 'map';
 let sunShadowBuildings = [];
@@ -929,14 +979,17 @@ function setStatus(t){ statusEl.textContent = t || ''; }
 
 async function loadFor(loc){
   const loadId = ++loadSequence;
+  if(loadAbortController) loadAbortController.abort();
+  loadAbortController = new AbortController();
+  const {signal} = loadAbortController;
   loc.bomStation = findNearbyBomStation(loc);
   setStatus(`Loading forecast for ${loc.name}…`);
   const [fusion, bom, obs, fusionCurrent, airQ] = await Promise.allSettled([
-    fetchFusion(loc),
-    fetchBom(loc),
-    fetchBomObsMaybe(loc),
-    fetchFusionCurrent(loc),
-    fetchAirQuality(loc)
+    fetchFusion(loc, signal),
+    fetchBom(loc, signal),
+    fetchBomObsMaybe(loc, signal),
+    fetchFusionCurrent(loc, signal),
+    fetchAirQuality(loc, signal)
   ]);
 
   const fusionData  = fusion.status==='fulfilled' ? fusion.value  : null;
@@ -946,6 +999,7 @@ async function loadFor(loc){
   const aqiData     = airQ.status==='fulfilled'   ? airQ.value   : null;
 
   if(loadId !== loadSequence) return;
+  if(loadAbortController?.signal === signal) loadAbortController = null;
   if(!fusionData){
     setStatus('Open-Meteo forecast failed');
     return;
@@ -956,6 +1010,10 @@ async function loadFor(loc){
     : fusionData;
 
   lastFusion = corrected;
+  lastBomData = bomData;
+  lastAqiData = aqiData;
+  lastCurrentData = currentData;
+  lastObsData = obsData;
   selectedLocation = {
     name:loc.name,
     lat:Number(loc.lat),
@@ -963,8 +1021,8 @@ async function loadFor(loc){
     timezone:corrected.timezone || loc.tz || 'auto'
   };
 
-  renderNext24Block(corrected);
-  renderCurrent(corrected, bomData, aqiData);
+  renderNext24Block(corrected, currentData);
+  renderCurrent(corrected, bomData, aqiData, currentData, obsData, loc);
   renderSun(corrected, loc);
   renderDailyIcons(corrected);
   renderHumidity(corrected);
@@ -982,7 +1040,7 @@ async function loadFor(loc){
 
 /* Open-Meteo */
 
-async function fetchFusion(loc){
+async function fetchFusion(loc, signal){
   const url = new URL(OM_FORECAST);
   url.searchParams.set('latitude', loc.lat);
   url.searchParams.set('longitude', loc.lon);
@@ -990,7 +1048,8 @@ async function fetchFusion(loc){
   url.searchParams.set('forecast_days','10');  // 10 日
   url.searchParams.set('hourly', [
     'temperature_2m','precipitation_probability','precipitation','rain','showers',
-    'cloud_cover','wind_speed_10m','wind_gusts_10m','wind_direction_10m',
+    'weather_code','cloud_cover','cloud_cover_low','cloud_cover_mid','cloud_cover_high',
+    'visibility','wind_speed_10m','wind_gusts_10m','wind_direction_10m',
     'relative_humidity_2m','uv_index'
   ].join(','));
   url.searchParams.set('daily', [
@@ -999,27 +1058,28 @@ async function fetchFusion(loc){
     'precipitation_probability_max','wind_speed_10m_max','wind_gusts_10m_max',
     'uv_index_max','weather_code'
   ].join(','));
-  const resp = await fetch(url);
+  const resp = await fetch(url, {signal});
   if(!resp.ok) throw new Error('fusion fetch failed');
   return resp.json();
 }
 
-async function fetchFusionCurrent(loc){
+async function fetchFusionCurrent(loc, signal){
   const url = new URL(OM_FORECAST);
   url.searchParams.set('latitude', loc.lat);
   url.searchParams.set('longitude', loc.lon);
   url.searchParams.set('timezone', loc.tz || 'auto');
   url.searchParams.set('current', [
     'temperature_2m','apparent_temperature',
+    'precipitation','rain','showers','weather_code','cloud_cover',
     'wind_speed_10m','wind_direction_10m',
     'relative_humidity_2m','uv_index'
   ].join(','));
-  const resp = await fetch(url);
+  const resp = await fetch(url, {signal});
   if(!resp.ok) throw new Error('fusion current failed');
   return resp.json();
 }
 
-async function fetchBom(loc){
+async function fetchBom(loc, signal){
   const url = new URL(OM_BOM);
   url.searchParams.set('latitude', loc.lat);
   url.searchParams.set('longitude', loc.lon);
@@ -1033,46 +1093,97 @@ async function fetchBom(loc){
     'temperature_2m_max','temperature_2m_min','precipitation_sum',
     'wind_speed_10m_max','wind_gusts_10m_max'
   ].join(','));
-  const resp = await fetch(url);
+  const resp = await fetch(url, {signal});
   if(!resp.ok) throw new Error('bom fetch failed');
   return resp.json();
 }
 
-async function fetchAirQuality(loc){
+async function fetchAirQuality(loc, signal){
   const url = new URL(OM_AIR);
   url.searchParams.set('latitude', loc.lat);
   url.searchParams.set('longitude', loc.lon);
   url.searchParams.set('timezone', loc.tz || 'auto');
   url.searchParams.set('hourly', 'us_aqi');
-  const resp = await fetch(url);
+  const resp = await fetch(url, {signal});
   if(!resp.ok) throw new Error('air quality fetch failed');
   return resp.json();
 }
 
-async function fetchBomObsMaybe(loc){
+async function fetchBomObsMaybe(loc, signal){
   if(!useObsEl || !useObsEl.checked || !loc.bomStation) return null;
   const obsUrl = loc.bomStation.obsUrl;
   const url = BOM_PROXY_PREFIX ? (BOM_PROXY_PREFIX + encodeURIComponent(obsUrl)) : obsUrl;
-  const resp = await fetch(url, { cache:'no-store' });
+  const resp = await fetch(url, { cache:'no-store', signal });
   if(!resp.ok) throw new Error('obs fetch failed');
   const data = await resp.json();
   const rows = data?.observations?.data ?? [];
-  return rows.length ? rows[rows.length-1] : null;
+  return getLatestBomObservation(rows);
 }
 
 /* Bias correction */
 
 function applyBiasCorrection(fusion, fusionCurrent, obs){
   try{
+    if(!isUsableBomObservation(obs)) return fusion;
     const dt = Number(obs.air_temp)     - Number(fusionCurrent.current?.temperature_2m ?? NaN);
     const dw = Number(obs.wind_spd_kmh) - Number(fusionCurrent.current?.wind_speed_10m ?? NaN);
     const out = structuredClone(fusion);
-    if(isFinite(dt)) out.hourly.temperature_2m = out.hourly.temperature_2m.map(v=>round1(v+dt));
-    if(isFinite(dw)) out.hourly.wind_speed_10m = out.hourly.wind_speed_10m.map(v=>round1(v+dw));
+    const now = Date.now();
+    if(isFinite(dt) && Array.isArray(out.hourly?.temperature_2m)){
+      out.hourly.temperature_2m = out.hourly.temperature_2m.map((v,i)=>{
+        const hours = Math.max(0,(new Date(out.hourly.time?.[i]).getTime() - now) / 36e5);
+        const weight = clamp(1 - hours / 3, 0, 1);
+        return round1(v + dt * weight);
+      });
+    }
+    if(isFinite(dw) && Array.isArray(out.hourly?.wind_speed_10m)){
+      out.hourly.wind_speed_10m = out.hourly.wind_speed_10m.map((v,i)=>{
+        const hours = Math.max(0,(new Date(out.hourly.time?.[i]).getTime() - now) / 36e5);
+        const weight = clamp(1 - hours / 3, 0, 1);
+        return round1(v + dw * weight);
+      });
+    }
     return out;
   }catch{
     return fusion;
   }
+}
+
+function getLatestBomObservation(rows){
+  return (rows || [])
+    .map(row => ({row, time:getBomObservationTime(row)}))
+    .filter(item => item.time && isFinite(item.time.getTime()))
+    .sort((a,b) => b.time - a.time)[0]?.row || null;
+}
+
+function getBomObservationTime(obs){
+  if(!obs) return null;
+  if(obs.aifstime_utc){
+    const utc = new Date(obs.aifstime_utc);
+    if(isFinite(utc)) return utc;
+  }
+  const full = String(obs.local_date_time_full || '').trim();
+  const match = full.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/);
+  if(match){
+    const [,y,m,d,h,min] = match;
+    const local = new Date(`${y}-${m}-${d}T${h}:${min}:00`);
+    if(isFinite(local)) return local;
+  }
+  const fallback = new Date(obs.local_date_time || obs.local_date_time_full || '');
+  return isFinite(fallback) ? fallback : null;
+}
+
+function getBomObservationAgeMinutes(obs){
+  const time = getBomObservationTime(obs);
+  return time ? Math.max(0,Math.round((Date.now() - time.getTime()) / 60000)) : Infinity;
+}
+
+function isUsableBomObservation(obs, loc=null){
+  if(!obs) return false;
+  const age = getBomObservationAgeMinutes(obs);
+  if(age > 90) return false;
+  if(loc?.bomStation && loc.bomStation.distanceKm > loc.bomStation.maxDistanceKm) return false;
+  return isFinite(Number(obs.air_temp)) || isFinite(Number(obs.wind_spd_kmh));
 }
 
 /* 搵最接近而家嗰個 hour index */
@@ -1095,7 +1206,7 @@ function getNearestHourIndex(timeArr){
 
 /* 卡 1：24 小時（Time → Temp → Rain%） */
 
-function renderNext24Block(fusion){
+function renderNext24Block(fusion, currentData=null){
   const time = fusion.hourly.time;
   const temp = fusion.hourly.temperature_2m;
   const pop  = fusion.hourly.precipitation_probability || [];
@@ -1106,20 +1217,24 @@ function renderNext24Block(fusion){
 
   const titleEl = $('#nowTitle');
   if (titleEl){
-    const nowTemp = temp[startIdx];
+    const nowTemp = currentData?.current?.temperature_2m ?? temp[startIdx];
     const nowPop  = pop[startIdx];
+    const nowPrecip = currentData?.current?.precipitation;
     const tmax = fusion.daily?.temperature_2m_max?.[0];
     const tmin = fusion.daily?.temperature_2m_min?.[0];
 
     const tLabel = (nowTemp!=null && isFinite(nowTemp)) ? `${round1(nowTemp)}°C` : '--°C';
     const pLabel = (nowPop !=null && isFinite(nowPop))  ? `${nowPop}%`          : '--%';
+    const precipLabel = nowPrecip != null && isFinite(nowPrecip)
+      ? ` · current precip ${round1(nowPrecip)} mm`
+      : '';
 
     let hiLoHtml = '';
     if(tmax != null && tmin != null){
       hiLoHtml = `<span class="hiLo"> · H ${round1(tmax)}° / L ${round1(tmin)}°</span>`;
     }
 
-    titleEl.innerHTML = `${tLabel} · ${pLabel}${hiLoHtml}`;
+    titleEl.innerHTML = `${tLabel} · ${pLabel}${precipLabel}${hiLoHtml}`;
   }
 
   const maxPoints = 24;
@@ -1144,20 +1259,32 @@ function renderNext24Block(fusion){
 
 /* 卡 2：Current + AQ */
 
-function renderCurrent(fusion, bom, aqi){
+function renderCurrent(fusion, bom, aqi, currentData, obs, loc){
   const k = $('#currentKpi'); k.innerHTML='';
-  const time = fusion.hourly.time;
-  if(!time || !time.length){
-    k.innerHTML = '<div class="muted">No data</div>';
+  const current = currentData?.current;
+  if(!current){
+    k.innerHTML = '<div class="muted">No current data</div>';
     return;
   }
-  const idx = getNearestHourIndex(time);
 
-  const w  = round1(fusion.hourly.wind_speed_10m[idx]);
-  const wdRaw = fusion.hourly.wind_direction_10m?.[idx];
+  const obsValid = loc?.bomStation && isUsableBomObservation(obs, loc);
+  const obsAge = obsValid ? getBomObservationAgeMinutes(obs) : null;
+  const sourceTime = current.time
+    ? new Date(current.time).toLocaleString(undefined,{hour:'numeric',minute:'2-digit',hour12:true})
+    : '—';
+
+  const temp = obsValid && isFinite(Number(obs.air_temp))
+    ? Number(obs.air_temp)
+    : Number(current.temperature_2m);
+  const w = obsValid && isFinite(Number(obs.wind_spd_kmh))
+    ? Number(obs.wind_spd_kmh)
+    : Number(current.wind_speed_10m);
+  const wdRaw = current.wind_direction_10m;
   const wd = displayWindDeg(wdRaw);
-  const rh = fusion.hourly.relative_humidity_2m?.[idx];
-  const uv = fusion.hourly.uv_index?.[idx];
+  const rh = current.relative_humidity_2m;
+  const uv = current.uv_index;
+  const precip = current.precipitation;
+  const cloud = current.cloud_cover;
 
   let aqStr = '—';
   if(aqi?.hourly?.time && aqi.hourly.time.length){
@@ -1168,11 +1295,18 @@ function renderCurrent(fusion, bom, aqi){
     }
   }
 
+  add('Temperature', isFinite(temp) ? `${round1(temp)}°C`:'—');
   add('Humidity', rh!=null? `${Math.round(rh)}%`:'—');
-  add('Wind speed', `${w} km/h`);
-  add('Wind direction', wd!=null? `${degToCompass(wd)} (${Math.round(wd)}°)`:'—');
+  add('Wind speed', isFinite(w) ? `${round1(w)} km/h`:'—');
+  add('Wind direction', obsValid && obs?.wind_dir ? `${obs.wind_dir} (observed)` : (wd!=null? `${degToCompass(wd)} (${Math.round(wd)}°)`:'—'));
+  add('Current precip', precip!=null? `${round1(precip)} mm`:'—');
+  add('Cloud cover', cloud!=null? `${Math.round(cloud)}% model`:'—');
   add('UV', uv!=null? uv.toFixed(1):'—');
   add('Air quality', aqStr);
+  add('Source', obsValid
+    ? `Observed: ${loc.bomStation.name} · ${round1(loc.bomStation.distanceKm)} km · ${obsAge} min old`
+    : 'Model estimate: Open-Meteo current');
+  add('Source time', obsValid ? `BOM observation · ${obsAge} min old` : `Open-Meteo · ${sourceTime}`);
 
   function add(kname, v){
     const d=document.createElement('div');
@@ -1597,11 +1731,13 @@ function renderDaily(fusion, bom){
     const pSum = d.precipitation_sum?.[i] ?? 0;
     const pMax = d.precipitation_probability_max?.[i] ?? null;
     const uvMax = d.uv_index_max?.[i] ?? null;
+    const confidence = forecastConfidenceLabel(i, fusion, bom);
     rows.push(`<tr>
       <td>${label}</td>
       <td>${round1(tmin)} / ${round1(tmax)} °C</td>
       <td>${pMax!=null? pMax+'%':'—'}</td>
       <td>${round1(pSum)} mm</td>
+      <td>${confidence}</td>
       <td>${uvMax!=null? uvMax.toFixed(1):'—'}</td>
     </tr>`);
   }
@@ -1611,12 +1747,30 @@ function renderDaily(fusion, bom){
         <th>Date</th>
         <th>Temp (min / max)</th>
         <th>Max rain prob.</th>
-        <th>Precip (blend)</th>
+        <th>Precip amount</th>
+        <th>Confidence</th>
         <th>Max UV</th>
       </tr>
     </thead>
     <tbody>${rows.join('')}</tbody>
   </table>`;
+}
+
+function forecastConfidenceLabel(dayIndex, fusion, bom){
+  if(dayIndex >= 7) return 'Low';
+  const f = fusion?.daily;
+  const b = bom?.daily;
+  if(!b?.time?.length || !f?.time?.[dayIndex]) return dayIndex <= 2 ? 'Medium' : 'Low';
+  const bomIndex = b.time.indexOf(f.time[dayIndex]);
+  if(bomIndex < 0) return dayIndex <= 2 ? 'Medium' : 'Low';
+  const tempDiff = Math.max(
+    Math.abs(Number(f.temperature_2m_max?.[dayIndex]) - Number(b.temperature_2m_max?.[bomIndex])),
+    Math.abs(Number(f.temperature_2m_min?.[dayIndex]) - Number(b.temperature_2m_min?.[bomIndex]))
+  );
+  const rainDiff = Math.abs(Number(f.precipitation_sum?.[dayIndex] || 0) - Number(b.precipitation_sum?.[bomIndex] || 0));
+  if(dayIndex <= 2 && tempDiff <= 2 && rainDiff <= 3) return 'High';
+  if(dayIndex <= 6 && tempDiff <= 4 && rainDiff <= 8) return 'Medium';
+  return 'Low';
 }
 
 /* Sun and Shadow Simulator */
@@ -3539,10 +3693,6 @@ async function initMap(){
     }
   ).addTo(rvMap);
 
-  rvMap.createPane('cloudOverlay');
-  rvMap.getPane('cloudOverlay').style.zIndex = 410;
-  rvMap.getPane('cloudOverlay').style.pointerEvents = 'none';
-
   rvMap.createPane('radarOverlay');
   rvMap.getPane('radarOverlay').style.zIndex = 430;
   rvMap.getPane('radarOverlay').style.pointerEvents = 'none';
@@ -3581,12 +3731,11 @@ async function refreshFrames(){
     const meta = await fetchRainViewerMetadata();
     rvHost = meta.host || rvHost;
     const parsed = parseRainViewerFrames(meta);
-    cloudFrames = parsed.cloudFrames;
     rvFrames = parsed.radarFrames;
     console.info('[RainViewer] frame counts', {
       radarPast: parsed.past.length,
       radarNowcast: parsed.nowcast.length,
-      satelliteInfrared: cloudFrames.length
+      satelliteInfrared: parsed.satelliteInfrared.length
     });
 
     if(!rvFrames.length){
@@ -3595,17 +3744,11 @@ async function refreshFrames(){
       return;
     }
 
-    // If RainViewer has no nowcast frames, start from the newest past frame.
-    // The old logic wrapped to the earliest frame when nowcast.length === 0.
-    rvIndex = parsed.nowcast.length
-      ? Math.max(0, rvFrames.findIndex(frame => frame.time === Number(parsed.nowcast[0].time)))
-      : rvFrames.length - 1;
-    if(rvIndex < 0) rvIndex = Math.max(rvFrames.length - parsed.nowcast.length,0);
+    rvIndex = rvFrames.length - 1;
     showFrame(rvIndex);
   }catch(e){
     console.error('RainViewer error', e);
     rvFrames = [];
-    cloudFrames = [];
     setRadarState('error');
   }
 }
@@ -3613,28 +3756,21 @@ async function refreshFrames(){
 function parseRainViewerFrames(meta){
   const past = (meta?.radar?.past ?? [])
     .filter(frame => frame?.path && Number.isFinite(Number(frame.time)))
-    .map(frame => ({time:Number(frame.time), path:String(frame.path)}));
+    .map(frame => ({time:Number(frame.time), path:String(frame.path)}))
+    .sort((a,b) => a.time - b.time);
   const nowcast = (meta?.radar?.nowcast ?? [])
     .filter(frame => frame?.path && Number.isFinite(Number(frame.time)))
     .map(frame => ({time:Number(frame.time), path:String(frame.path)}));
-  const clouds = (meta?.satellite?.infrared ?? [])
+  const satelliteInfrared = (meta?.satellite?.infrared ?? [])
     .filter(frame => frame?.path && Number.isFinite(Number(frame.time)))
-    .map(frame => ({time:Number(frame.time), path:String(frame.path)}))
-    .sort((a,b) => a.time - b.time);
-  const combined = [...past.slice(-8), ...nowcast.slice(0,6)];
-  const seen = new Set();
-  const radarFrames = combined
-    .filter(frame => {
-      const key = `${frame.time}:${frame.path}`;
-      if(seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .sort((a,b) => a.time - b.time);
+    .map(frame => ({time:Number(frame.time), path:String(frame.path)}));
+  const latestPastTime = past.at(-1)?.time ?? 0;
+  const cutoff = latestPastTime - 2 * 60 * 60;
+  const radarFrames = past.filter(frame => frame.time >= cutoff);
   return {
     past,
     nowcast,
-    cloudFrames: clouds,
+    satelliteInfrared,
     radarFrames
   };
 }
@@ -3660,25 +3796,6 @@ function layerUrl(frame){
   return `${rvHost}${frame.path}/256/{z}/{x}/{y}/2/1_1.png`;
 }
 
-function cloudLayerUrl(frame){
-  return `${rvHost}${frame.path}/256/{z}/{x}/{y}/0/0_0.png`;
-}
-
-function findClosestCloudFrame(targetTime){
-  if(!cloudFrames.length || !Number.isFinite(targetTime)) return null;
-  let best = cloudFrames[0];
-  let bestDiff = Math.abs(best.time - targetTime);
-  for(const frame of cloudFrames){
-    const diff = Math.abs(frame.time - targetTime);
-    if(diff < bestDiff){
-      best = frame;
-      bestDiff = diff;
-    }
-  }
-  // Avoid showing a stale cloud layer if the satellite frame is far from the radar timeline.
-  return bestDiff <= 90 * 60 ? best : null;
-}
-
 function showFrame(i){
   const frames = rvFrames;
   if(!frames.length){
@@ -3686,71 +3803,52 @@ function showFrame(i){
       rvMap.removeLayer(overlay);
       overlay = null;
     }
-    if(cloudOverlay){
-      rvMap.removeLayer(cloudOverlay);
-      cloudOverlay = null;
-    }
     return;
   }
   if(rvMap) rvMap.invalidateSize();
   rvIndex = (i + frames.length) % frames.length;
   const f = frames[rvIndex];
-  const cloudFrame = findClosestCloudFrame(f.time);
   console.info('[RainViewer] selected radar frame', {
     time: f.time,
     isoTime: new Date(f.time * 1000).toISOString(),
-    satelliteInfraredFrames: cloudFrames.length,
-    cloudFrameTime: cloudFrame?.time ?? null
+    selectedFrameIndex: rvIndex,
+    totalFrames: frames.length
   });
-  if(cloudOverlay){
-    rvMap.removeLayer(cloudOverlay);
-    cloudOverlay = null;
-  }
-  if(cloudFrame){
-    cloudOverlay = L.tileLayer(cloudLayerUrl(cloudFrame), {
-      pane:'cloudOverlay',
-      tileSize:256,
-      maxNativeZoom:7,
-      maxZoom:19,
-      opacity:0.36,
-      crossOrigin:true,
-      updateWhenIdle:true,
-      keepBuffer:2
-    });
-    cloudOverlay.on('tileerror', () => console.info('RainViewer satellite tile unavailable'));
-    cloudOverlay.addTo(rvMap);
-  }
   if(overlay) rvMap.removeLayer(overlay);
   overlay = L.tileLayer(layerUrl(f), {
     pane:'radarOverlay',
     tileSize:256,
     maxNativeZoom:7,
     maxZoom:19,
-    opacity:0.62,
+    opacity:0.86,
     crossOrigin:true,
     updateWhenIdle:true,
     keepBuffer:2
   });
   radarTileErrors = 0;
+  radarTileLoads = 0;
   overlay.on('tileerror', () => {
-    // RainViewer may return missing/empty radar tiles for dry areas or uncovered tiles.
-    // Do not switch the whole radar UI into an error state because of a few missing tiles.
     radarTileErrors += 1;
     console.info('RainViewer tile unavailable', radarTileErrors);
+    if(radarTileErrors >= 8 && radarTileLoads === 0) setRadarState('tileError');
   });
-  overlay.on('load', () => setRadarState('ready'));
+  overlay.on('tileload', () => { radarTileLoads += 1; });
+  overlay.on('load', () => {
+    const frameAgeMinutes = (Date.now() - f.time * 1000) / 60000;
+    setRadarState(frameAgeMinutes > 45 ? 'stale' : 'coverage');
+  });
   overlay.addTo(rvMap);
-  setRadarState('ready');
+  setRadarState('coverage');
   const ts = new Date(f.time*1000);
   const latestLabel = rvIndex === frames.length - 1 ? 'latest' : `${rvIndex + 1}/${frames.length}`;
-  const cloudLabel = cloudFrame ? 'cloud layer on' : 'Cloud layer unavailable from RainViewer';
-  $('#rvLabel').textContent = `Radar time: ${
+  const ageLabel = formatFrameAge(f.time);
+  $('#rvLabel').textContent = `Radar frame generated: ${
     ts.toLocaleString(undefined,{
       hour:'numeric',
       minute:'2-digit',
       hour12:true
     })
-  } (local · ${latestLabel} · ${cloudLabel})`;
+  } (local · ${latestLabel} · ${ageLabel} · Satellite cloud imagery unavailable — radar still shows precipitation only)`;
 }
 
 function setRadarState(state){
@@ -3758,27 +3856,40 @@ function setRadarState(state){
   const label = $('#rvLabel');
   const controls = [$('#rvPrev'), $('#rvPlay'), $('#rvNext')];
   const states = {
-    loading: ['Loading radar…', '', true],
-    ready: ['', '', false],
-    empty: ['Radar unavailable', 'No radar frames are currently available from the radar provider.', true],
-    coverage: ['Radar loaded', 'No rain may be visible if the selected frame has little or no precipitation over this area.', false],
-    error: ['Radar temporarily unavailable', 'The radar service could not be reached. Forecast data is still available.', true]
+    loading: ['Loading radar frames…', '', true, true],
+    empty: ['Radar coverage unavailable for this area', 'No RainViewer radar frames are currently available. Do not interpret this as dry weather.', true, true],
+    coverage: ['Radar coverage available', 'If no coloured echo is visible in the current view, there is no visible precipitation echo in the loaded frame. Tile errors are not proof of dry weather.', false, false],
+    tileError: ['Radar tiles failed to load', 'The provider returned missing tiles. Forecast data is still available; do not interpret this as no precipitation.', false, true],
+    stale: ['Radar frame is stale', 'The latest frame is older than expected. Use it as recent history, not live conditions.', false, false],
+    error: ['Radar temporarily unavailable', 'The radar service could not be reached. Forecast data is still available.', true, true]
   };
-  const [title, detail, disabled] = states[state] || states.error;
+  const [title, detail, disabled, showOverlay] = states[state] || states.error;
   if(disabled && rvTimer){
     clearInterval(rvTimer);
     rvTimer = null;
     $('#rvPlay').textContent = 'Play';
   }
   controls.forEach(control => { if(control) control.disabled = disabled; });
-  if(state === 'ready'){
+  if(!showOverlay){
     message.classList.remove('is-visible');
     message.innerHTML = '';
+    if(state === 'coverage' && !label.textContent){
+      label.textContent = title;
+    }
     return;
   }
   label.textContent = title;
   message.innerHTML = `<div><strong>${title}</strong>${detail ? `<span>${detail}</span>` : ''}</div>`;
   message.classList.toggle('is-visible', state !== 'loading');
+}
+
+function formatFrameAge(epochSeconds){
+  const minutes = Math.max(0,Math.round((Date.now() - epochSeconds * 1000) / 60000));
+  if(minutes < 1) return 'Frame generated just now';
+  if(minutes < 60) return `Frame generated ${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return `Frame generated ${hours} h${remainder ? ` ${remainder} min` : ''} ago`;
 }
 
 function step(d){ showFrame(rvIndex + d); }
@@ -3957,8 +4068,44 @@ function timeLabelWithDow(isoStr){
 /* 定期更新 radar frames */
 
 setInterval(async()=>{
-  try{ await refreshFrames(); }catch(e){}
+  try{
+    await refreshFrames();
+    await refreshCurrentConditions();
+  }catch(e){}
 }, 300000);
+
+setInterval(async()=>{
+  if(!selectedLocation?.lat) return;
+  try{
+    await loadFor({
+      ...selectedLocation,
+      tz:selectedLocation.timezone || selectedLocation.tz || 'auto'
+    });
+  }catch(e){}
+}, 45 * 60 * 1000);
+
+async function refreshCurrentConditions(){
+  if(!selectedLocation?.lat || !lastFusion) return;
+  const loc = {
+    ...selectedLocation,
+    tz:selectedLocation.timezone || selectedLocation.tz || 'auto',
+    bomStation:findNearbyBomStation(selectedLocation)
+  };
+  try{
+    const [current, obs, airQ] = await Promise.allSettled([
+      fetchFusionCurrent(loc),
+      fetchBomObsMaybe(loc),
+      fetchAirQuality(loc)
+    ]);
+    lastCurrentData = current.status === 'fulfilled' ? current.value : lastCurrentData;
+    lastObsData = obs.status === 'fulfilled' ? obs.value : lastObsData;
+    lastAqiData = airQ.status === 'fulfilled' ? airQ.value : lastAqiData;
+    renderNext24Block(lastFusion,lastCurrentData);
+    renderCurrent(lastFusion,lastBomData,lastAqiData,lastCurrentData,lastObsData,loc);
+  }catch(error){
+    console.info('Current-condition refresh failed', error);
+  }
+}
 </script>
 </body>
 </html>
